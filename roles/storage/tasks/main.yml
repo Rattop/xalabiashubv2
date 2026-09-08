@@ -1,0 +1,118 @@
+---
+# =============================================================================
+# ROLE: storage
+# -----------------------------------------------------------------------------
+# O QUE FAZ
+#   Monta os dois subvolumes BTRFS do HD externo (@media e @cloud) e garante
+#   que a montagem sobreviva a reboot, gravando-a no /etc/fstab.
+#
+# O ERRO MAIS PERIGOSO DO REPOSITÓRIO ANTIGO ESTAVA AQUI
+#   O setup.yml original fazia:
+#
+#       - name: Configura o fstab
+#         copy: src=files/fstab dest=/etc/fstab
+#
+#   Ou seja: copiava um /etc/fstab INTEIRO, com os UUIDs de /, /boot, /boot/efi,
+#   /home e swap da máquina onde o arquivo foi capturado.
+#
+#   Numa reinstalação do sistema — exatamente o cenário que este projeto quer
+#   suportar — o instalador cria partições novas, com UUIDs novos. Copiar o
+#   fstab antigo por cima escreveria referências a volumes que não existem
+#   mais, e o host NÃO DARIA BOOT na próxima reinicialização.
+#
+#   A correção é usar ansible.posix.mount, que edita o fstab cirurgicamente:
+#   mexe só na linha do ponto de montagem informado e preserva todo o resto.
+#
+# CONCEITO PARA ESTUDAR AQUI: escolher o módulo certo
+#   `copy` de um arquivo de sistema inteiro é quase sempre um cheiro de
+#   problema. Se existe um módulo que entende o FORMATO do arquivo (mount para
+#   fstab, lineinfile para configs simples, template para gerar do zero), ele
+#   vai ser mais seguro que sobrescrever tudo.
+# =============================================================================
+
+- name: Pontos de montagem existem
+  # Precisam existir ANTES da montagem: o mount não cria o diretório de destino.
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  loop: "{{ media_mounts }}"
+  loop_control:
+    label: "{{ item.path }}"
+  tags: [storage]
+
+- name: Detectar se o disco de mídia está conectado
+  # CORREÇÃO (B1) — `check_mode: false` é essencial aqui.
+  #
+  # Módulos command/shell NÃO rodam em `--check` (o Ansible não tem como saber
+  # se um comando arbitrário é seguro). Eles são PULADOS, e a variável
+  # registrada vira apenas {"skipped": true} — sem .rc, sem .stdout.
+  #
+  # Consequência: a task seguinte, que faz `when: media_blkid.rc == 0`, quebra
+  # com erro de atributo indefinido. O playbook inteiro morre em --check.
+  #
+  # `check_mode: false` diz "esta task é somente leitura, execute-a mesmo em
+  # simulação". Combinada com `changed_when: false`, ela nunca reporta mudança
+  # e nunca altera nada — é seguro rodá-la sempre.
+  #
+  # REGRA GERAL: toda task que só COLETA informação para decidir outra coisa
+  # precisa de `check_mode: false` + `changed_when: false`.
+  ansible.builtin.command: "blkid --uuid {{ media_uuid }}"
+  register: media_blkid
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  tags: [storage]
+
+- name: Avisar quando o disco de mídia não está presente
+  # Ausência é AVISO, não erro fatal: um clone de laboratório legitimamente
+  # não tem o HD externo, e o resto do provisionamento deve seguir.
+  ansible.builtin.debug:
+    msg: >-
+      Disco {{ media_uuid }} não encontrado neste host.
+      As montagens de mídia serão puladas — normal num clone de laboratório.
+      Num host de produção, investigue antes de prosseguir.
+  when: media_blkid.rc != 0
+  tags: [storage]
+
+- name: Subvolumes BTRFS montados e registrados no fstab
+  # As opções de montagem, explicadas:
+  #
+  #   nofail                      — se o disco sumir, o boot continua. Sem
+  #                                 isto, um HD externo desconectado deixa o
+  #                                 host preso no modo de emergência.
+  #   x-systemd.device-timeout=10 — espera no máximo 10s pelo dispositivo, em
+  #                                 vez do padrão de 90s.
+  #   compress=zstd:N             — compressão transparente do BTRFS. @media
+  #                                 usa nível 1 (vídeo já é comprimido, não
+  #                                 vale gastar CPU); @cloud usa nível 3
+  #                                 (documentos e texto comprimem bem).
+  #   subvol=@nome                — qual subvolume montar. É por isso que o
+  #                                 mesmo UUID aparece em dois pontos de
+  #                                 montagem diferentes: é um filesystem só,
+  #                                 com dois subvolumes.
+  ansible.posix.mount:
+    path: "{{ item.path }}"
+    src: "UUID={{ media_uuid }}"
+    fstype: btrfs
+    opts: "nofail,x-systemd.device-timeout=10,compress={{ item.compress }},subvol={{ item.subvol }}"
+    state: mounted
+  loop: "{{ media_mounts }}"
+  loop_control:
+    label: "{{ item.path }} ({{ item.subvol }})"
+  when: media_blkid.rc == 0
+  tags: [storage]
+
+- name: Diretório de música com dono correto
+  # O Navidrome lê e o Picard escreve aqui, ambos como UID 1000. Se o dono
+  # estiver errado, o Navidrome indexa uma biblioteca vazia sem reclamar.
+  ansible.builtin.file:
+    path: "{{ music_dir }}"
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0775'
+  when: media_blkid.rc == 0
+  tags: [storage]
