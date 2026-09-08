@@ -1,0 +1,25 @@
+---
+# =============================================================================
+# MODELO. Copie para vault.yml e cifre:
+#
+#   cp group_vars/all/vault.yml.example group_vars/all/vault.yml
+#   openssl rand -base64 24          # gere cada senha
+#   ansible-vault encrypt group_vars/all/vault.yml
+#
+# vault.yml está no .gitignore. Este .example, não.
+#
+# ATENÇÃO: as senhas anteriores deste projeto ficaram expostas no histórico
+# público do GitHub. Precisam ser ROTACIONADAS, não reaproveitadas. Trocar a
+# senha do MariaDB num banco que já existe exige ALTER USER — o playbook não
+# faz isso sozinho. Veja README.md > "Rotação de segredos".
+# =============================================================================
+
+# Senha do usuário "pelican" no MariaDB (usada pelo painel e pelo banco).
+vault_pelican_db_password:      "TROQUE-ME"
+# Senha de root do MariaDB. Só usada em manutenção manual do banco.
+vault_pelican_db_root_password: "TROQUE-ME"
+
+# Senha do Redis. Senha PRÓPRIA, não reaproveitada das outras: se um segredo
+# vazar, o raio do estrago fica limitado a um serviço.
+vault_pelican_redis_password:   "TROQUE-ME"
+vault_pelican_admin_email:      "admin@xalabiashub.online"

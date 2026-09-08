@@ -1,0 +1,189 @@
+---
+# =============================================================================
+# XalabiasHub - Variáveis centrais (NÃO SENSÍVEIS)
+# Segredos ficam em group_vars/all/vault.yml, cifrado com ansible-vault.
+#
+# Este arquivo é a ÚNICA fonte de verdade. Nenhum playbook, template ou role
+# deve conter IP, domínio, UUID, usuário ou caminho hardcoded.
+# =============================================================================
+
+# --- Identidade do ambiente --------------------------------------------------
+app_user:  ratto
+app_group: ratto
+app_home:  "/home/{{ app_user }}"
+app_uid:   1000
+app_gid:   1000
+
+base_domain: xalabiashub.online
+timezone:    America/Sao_Paulo
+
+# IP em que os serviços de jogo publicam portas. Derivado dos facts para não
+# quebrar num clone com IP diferente. O Pelican grava esse valor no banco,
+# então mudá-lo exige reconfigurar o node pelo painel.
+host_lan_ip: "{{ ansible_default_ipv4.address }}"
+
+# --- Armazenamento -----------------------------------------------------------
+# UUID do HD externo BTRFS. Só as linhas de mídia são gerenciadas: o playbook
+# NUNCA reescreve o /etc/fstab inteiro, porque os UUIDs de / /boot /home mudam
+# a cada reinstalação e um fstab copiado de outra máquina não dá boot.
+media_uuid: "38919fea-3ab2-4c73-89cd-adbf309b23bd"
+
+media_mounts:
+  - path:     /mnt/media
+    subvol:   "@media"
+    compress: "zstd:1"
+  - path:     /mnt/cloud
+    subvol:   "@cloud"
+    compress: "zstd:3"
+
+media_root: /mnt/media
+music_dir:  "/mnt/media/musga"
+
+# --- Firewall ----------------------------------------------------------------
+# Replica EXATAMENTE o estado auditado em 07/09/2026 na zona public.
+# Portas de container (4533, 5800, 8100, 25565) NÃO entram aqui: o Docker
+# gerencia a zona "docker" sozinho e injeta as próprias regras de FORWARD.
+# Portas de host (80, 7681, 8096) permanecem FECHADAS para a LAN — só são
+# alcançáveis via cloudflared, que conecta a partir de localhost.
+firewall_zone: public
+firewall_public_services:
+  - ssh
+  - cockpit          # herdado do template do AlmaLinux; cockpit não instalado
+  - dhcpv6-client
+firewall_public_ports:
+  - "2022/tcp"       # SFTP do Pelican Wings
+
+# --- Binários de terceiros ---------------------------------------------------
+# Versões fixadas. Nada de "latest" em produção: uma atualização silenciosa de
+# upstream não deve reconfigurar o host sem você saber.
+#
+# Checksums verificados em 08/09/2026 baixando cada binário da URL abaixo.
+# Com checksum definido, o get_url aborta se o download não bater — é a defesa
+# contra comprometimento de supply chain.
+#
+# Ao trocar de versão, RECALCULE. O comando (sem sintaxe Jinja, no shell):
+#   curl -sL <URL-COMPLETA-COM-A-VERSAO-LITERAL> | sha256sum
+ttyd_version:    "1.7.7"
+ttyd_url:        "https://github.com/tsl0922/ttyd/releases/download/{{ ttyd_version }}/ttyd.x86_64"
+ttyd_checksum:   "sha256:8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55"
+
+playit_version:  "v1.0.5"
+playit_url:      "https://github.com/playit-cloud/playit-agent/releases/download/{{ playit_version }}/playit-linux-amd64"
+playit_checksum: "sha256:217bd341b3ea88f982ce45bb68aa8b795bf8d6866be841cc675d36f3c6b90277"
+
+wings_version:   "v1.0.0-beta25"
+wings_url:       "https://github.com/pelican-dev/wings/releases/download/{{ wings_version }}/wings_linux_amd64"
+wings_checksum:  "sha256:4fb1f8302cb4458d39e11667d8df646363ce6ac4784110513ed8b8b269c1939c"
+
+# --- Cloudflare Tunnel -------------------------------------------------------
+cloudflare_tunnel_id:   "d4e1d3d5-eb25-4892-8ec4-07bf6e6faf24"
+cloudflare_tunnel_name: "xalabias-tunnel"
+
+# Rotas do túnel. A antiga files.<dominio> -> :8080 foi REMOVIDA: apontava
+# para um Filebrowser que não existe mais e gerava erro a cada varredura de
+# robô no log do cloudflared.
+cloudflare_ingress:
+  - { hostname: "{{ base_domain }}",          service: "http://localhost:80" }
+  - { hostname: "painel.{{ base_domain }}",   service: "http://localhost:80" }
+  - { hostname: "node.{{ base_domain }}",     service: "http://localhost:8082" }
+  - { hostname: "jellyfin.{{ base_domain }}", service: "http://localhost:8096" }
+  - { hostname: "ssh.{{ base_domain }}",      service: "http://localhost:7681" }
+  - { hostname: "music.{{ base_domain }}",    service: "http://localhost:4533" }
+  - { hostname: "capas.{{ base_domain }}",    service: "http://localhost:5800" }
+  - { hostname: "mapa.{{ base_domain }}",     service: "http://{{ host_lan_ip }}:8100" }
+
+# --- Front-end ---------------------------------------------------------------
+site_repo: "git@github.com:Rattop/xalabiaserver.git"
+site_dest: /var/www/xalabiaserver
+
+# --- Stacks e serviços -------------------------------------------------------
+docker_stacks:
+  - pelican-panel
+  - jellyfin
+  - navidrome
+  - picard
+
+# Serviços systemd nativos, em ordem de dependência.
+systemd_services:
+  - docker
+  - nginx
+  - cloudflared
+  - ttyd
+  - playit
+  - wings
+
+# --- Toggles de hardening ----------------------------------------------------
+# Cada um desfaz uma decisão insegura do repositório antigo. São variáveis (e
+# não valores fixos) porque cada um tem risco de regressão diferente; se algo
+# quebrar no clone, você reverte UM por vez sem editar task nenhuma.
+# Veja README.md > "Riscos de regressão".
+
+# Jellyfin sem privileged. O acesso à GPU passa a ser feito por group_add com
+# os GIDs NUMÉRICOS do host, descobertos em tempo de execução pela role media.
+jellyfin_privileged:        false
+
+# Biblioteca de mídia montada somente-leitura no Jellyfin. Ele indexa e
+# transcodifica, mas nunca precisa escrever — os metadados vão para ./config.
+# Mude para false SOMENTE se você ativar "salvar metadados junto à mídia" nas
+# configurações da biblioteca (não é o padrão do Jellyfin).
+jellyfin_media_readonly:    true
+
+# Endereço em que Navidrome e Picard publicam suas portas.
+#   127.0.0.1 -> acesso só pelo túnel Cloudflare (com autenticação do Access)
+#   0.0.0.0   -> qualquer dispositivo da LAN, SEM autenticação de borda
+# Era 0.0.0.0 antes deste projeto. Se você usa app de música apontando direto
+# para o IP do servidor na rede local, troque — sabendo o que está abrindo.
+media_bind_address:         "127.0.0.1"
+# SELinux do Jellyfin: MANTIDO desligado. A policy 42.x do AlmaLinux 10 não
+# expõe mais o boolean container_execmem que resolvia o SIGSEGV do JIT .NET.
+# Reduzir isso exige política própria, igual à do ttyd. Fica como dívida.
+jellyfin_selinux_disable:   true
+
+# Pelican sem privileged nem seccomp:unconfined. O seccomp:unconfined era
+# workaround do bug de token, que já foi resolvido na raiz.
+pelican_privileged:         false
+pelican_seccomp_unconfined: false
+
+# TRUSTED_PROXIES=* fazia o Laravel confiar em X-Forwarded-For de qualquer
+# origem: spoof de IP, bypass do rate-limit de login, log de auditoria
+# envenenado. Aqui: só Cloudflare e a bridge local do compose.
+pelican_trusted_proxies: "127.0.0.1,172.18.0.0/16,{{ cloudflare_ipv4_ranges | join(',') }}"
+
+# Caddyfile interno do painel: gerenciado pelo Ansible.
+#
+# Ficou DESATIVADO até 08/09/2026, porque o arquivo existente no host tinha
+# sido criado à mão e seu conteúdo não havia sido capturado na auditoria.
+# Sobrescrever um arquivo cujo conteúdo você desconhece é como aplicar um
+# patch sem ler o diff.
+#
+# O conteúdo real foi então extraído do host e comparado com o template:
+# idênticos linha a linha (só divergiam em comentários). Verificado, ativado.
+pelican_manage_caddyfile: true
+
+# ttyd escutando só em loopback. O cloudflared conecta por localhost, então o
+# acesso via ssh.<dominio> continua idêntico; o que deixa de existir é o
+# prompt de login exposto na LAN em 0.0.0.0:7681.
+ttyd_bind_interface: lo
+
+# MariaDB fica em 10.5 de propósito: subir para 11.x LTS é migração de dados,
+# não mudança de config, e não cabe num playbook de convergência. Trocar aqui
+# só depois de backup do volume.
+mariadb_image: "mariadb:10.5"
+
+# Ranges oficiais do Cloudflare (set_real_ip_from no nginx + trusted proxies).
+cloudflare_ipv4_ranges:
+  - 103.21.244.0/22
+  - 103.22.200.0/22
+  - 103.31.4.0/22
+  - 104.16.0.0/13
+  - 104.24.0.0/14
+  - 108.162.192.0/18
+  - 131.0.72.0/22
+  - 141.101.64.0/18
+  - 162.158.0.0/15
+  - 172.64.0.0/13
+  - 173.245.48.0/20
+  - 188.114.96.0/20
+  - 190.93.240.0/20
+  - 197.234.240.0/22
+  - 198.41.128.0/17
