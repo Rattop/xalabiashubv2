@@ -1,0 +1,94 @@
+---
+# =============================================================================
+# update.yml — manutenção. Pacotes, imagens, site, limpeza.
+#
+# A auditoria mostrou 26 versões de kernel e correções Important de OpenSSH,
+# nginx e Node.js pendentes: este playbook não estava rodando em cadência
+# nenhuma. Considere um systemd timer semanal depois de validado.
+# =============================================================================
+
+- name: Atualizar sistema e stacks
+  hosts: xalabiashub
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Atualizações de segurança do sistema
+      ansible.builtin.dnf:
+        name: "*"
+        state: latest
+        security: "{{ update_security_only | default(true) }}"
+        update_only: true
+      register: dnf_update
+
+    - name: Site front-end atualizado
+      ansible.builtin.git:
+        repo: "{{ site_repo }}"
+        dest: "{{ site_dest }}"
+        version: main
+        update: true
+        force: true
+        # accept_hostkey removido: a chave do github.com é fixada pela role
+        # common, então não há mais confiança cega na primeira conexão.
+      become_user: "{{ app_user }}"
+      register: site_update
+
+    - name: Recarregar nginx se o site mudou
+      ansible.builtin.service:
+        name: nginx
+        state: reloaded
+      when: site_update.changed
+
+    - name: Baixar imagens novas
+      ansible.builtin.command:
+        cmd: docker compose pull
+        chdir: "{{ app_home }}/docker/{{ item }}"
+      become_user: "{{ app_user }}"
+      loop: "{{ docker_stacks }}"
+      register: pull_result
+      changed_when: >-
+        'Pulled' in (pull_result.stdout | default('')) or
+        'Pulled' in (pull_result.stderr | default(''))
+
+    - name: Recriar containers com as imagens novas
+      ansible.builtin.command:
+        cmd: docker compose up -d --remove-orphans
+        chdir: "{{ app_home }}/docker/{{ item }}"
+      become_user: "{{ app_user }}"
+      loop: "{{ docker_stacks }}"
+      register: recreate
+      changed_when: >-
+        'Recreated' in (recreate.stderr | default('')) or
+        'Started' in (recreate.stderr | default(''))
+
+    # `dnf autoremove` e `docker image prune` REMOVEM COISAS. O playbook
+    # antigo marcava changed_when: false nos dois, o que fazia o relatório
+    # dizer "ok" enquanto pacotes eram desinstalados em produção.
+    - name: Remover pacotes órfãos
+      ansible.builtin.command: dnf autoremove -y
+      register: autoremove
+      changed_when: "'Nothing to do' not in autoremove.stdout"
+
+    - name: Remover imagens Docker sem uso
+      ansible.builtin.command: docker image prune -f
+      register: prune
+      changed_when: "'Total reclaimed space: 0B' not in prune.stdout"
+
+    - name: Verificar se há reboot pendente
+      # CORREÇÃO (B7): era `needs-restarting -r` como binário solto. No EL10
+      # o comando é um SUBCOMANDO do dnf, fornecido pelo dnf-plugins-core.
+      # A versão antiga sempre falhava silenciosamente e reportava "sem reboot
+      # pendente" mesmo com 26 versões de kernel acumuladas.
+      #
+      # Código de saída: 0 = sem reboot necessário, 1 = reboot necessário.
+      ansible.builtin.command: dnf needs-restarting -r
+      register: needs_reboot
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Aviso de reboot
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'REBOOT NECESSÁRIO (kernel ou libs críticas atualizados).'
+             if needs_reboot.rc != 0 else 'Sem reboot pendente.' }}

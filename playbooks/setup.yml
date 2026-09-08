@@ -1,0 +1,225 @@
+---
+# =============================================================================
+# PLAYBOOK: setup.yml — convergência completa do host
+# =============================================================================
+#
+# O QUE É "CONVERGÊNCIA"
+#   O playbook descreve o ESTADO DESEJADO do host. Ao rodar, o Ansible compara
+#   o estado atual com o desejado e aplica só a diferença. Ele não executa uma
+#   receita de passos — ele reconcilia realidade com intenção.
+#
+#   A consequência prática é que ESTE MESMO PLAYBOOK serve para dois cenários
+#   que parecem opostos:
+#
+#     1. Host RECÉM-INSTALADO   -> a diferença é "tudo", então ele instala tudo
+#     2. Host VIVO com problemas -> a diferença são os problemas, então ele
+#                                   corrige só isso, sem derrubar o que já roda
+#
+#   É por isso que o mesmo arquivo cobre "montar do zero" e "consertar a
+#   deriva acumulada". Não são duas funções: é uma só, vista de dois estados
+#   iniciais diferentes.
+#
+# COMO SABER SE ESTÁ CORRETO — o teste de idempotência
+#   Rode duas vezes seguidas. A segunda execução deve reportar changed=0.
+#   Se reportar mudanças, alguma task está fazendo trabalho desnecessário e
+#   você perdeu a capacidade de enxergar mudança REAL no relatório.
+#
+# EXECUÇÃO
+#   # 1. Simular (não altera nada, mostra o diff de cada arquivo)
+#   ansible-playbook playbooks/setup.yml --limit lab --check --diff --ask-vault-pass
+#
+#   # 2. Aplicar
+#   ansible-playbook playbooks/setup.yml --limit lab --ask-vault-pass
+#
+#   # 3. Confirmar idempotência
+#   ansible-playbook playbooks/setup.yml --limit lab --ask-vault-pass | tail -5
+# =============================================================================
+
+- name: XalabiasHub - convergência do host
+  hosts: xalabiashub
+  become: true
+  gather_facts: true
+
+  # ---------------------------------------------------------------------------
+  # PRE_TASKS — portões de segurança
+  #
+  # Rodam ANTES de qualquer role. A ideia é falhar rápido e barato: descobrir
+  # que faltava uma variável depois de meio host reconfigurado é muito pior do
+  # que não ter começado.
+  # ---------------------------------------------------------------------------
+  pre_tasks:
+
+    - name: "Portão 1 — variáveis obrigatórias definidas"
+      ansible.builtin.assert:
+        that:
+          - app_user is defined
+          - base_domain is defined
+          - media_uuid is defined
+          - cloudflare_tunnel_id is defined
+        fail_msg: >-
+          group_vars/all/main.yml está incompleto ou não foi carregado.
+          Confirme que o arquivo existe e que você está rodando a partir da
+          raiz do repositório.
+        success_msg: "Variáveis obrigatórias presentes."
+      tags: [always]
+
+    - name: "Portão 2 — sistema operacional compatível"
+      # As roles usam dnf, firewalld e a política SELinux targeted da família
+      # Red Hat. Rodar isto num Debian não daria erro imediato — daria erro
+      # confuso, cinco tasks adiante.
+      ansible.builtin.assert:
+        that:
+          - ansible_os_family == "RedHat"
+          - ansible_distribution_major_version | int >= 9
+        fail_msg: >-
+          Este projeto assume Enterprise Linux 9 ou superior
+          (AlmaLinux, Rocky, RHEL).
+          Detectado: {{ ansible_distribution }} {{ ansible_distribution_version }}.
+        success_msg: "{{ ansible_distribution }} {{ ansible_distribution_version }} — compatível."
+      tags: [always]
+
+    - name: "Portão 3 — política SELinux do ttyd não é o modelo vazio"
+      # Impede que o arquivo de exemplo chegue à produção. Uma política SELinux
+      # inventada por dedução ou concede permissão demais (um buraco que
+      # ninguém percebe) ou de menos (o ttyd volta a quebrar).
+      ansible.builtin.assert:
+        that:
+          - "'PLACEHOLDER' not in lookup('file', playbook_dir + '/../roles/selinux/files/ttyd_login_fix.te')"
+        fail_msg: >-
+          roles/selinux/files/ttyd_login_fix.te ainda é o modelo vazio.
+          Recupere o conteúdo real com:  cat /home/ratto/ttyd_login_fix.te
+        success_msg: "Política SELinux do ttyd presente."
+      delegate_to: localhost
+      become: false
+      run_once: true
+      tags: [always, selinux]
+
+    - name: "Portão 4 — espaço em disco suficiente"
+      # 2 GB é o piso para baixar imagens Docker e pacotes sem encher a raiz.
+      # Disco cheio no meio de uma convergência deixa o host num estado
+      # parcialmente aplicado, que é o pior estado possível.
+      ansible.builtin.assert:
+        that:
+          - root_free_bytes > 2147483648
+        fail_msg: >-
+          Apenas {{ (root_free_bytes / 1073741824) | round(1) }} GB livres em /.
+          Libere espaço antes de continuar.
+        success_msg: "{{ (root_free_bytes / 1073741824) | round(1) }} GB livres em / — suficiente."
+      vars:
+        root_free_bytes: >-
+          {{ ansible_mounts
+             | selectattr('mount', 'equalto', '/')
+             | map(attribute='size_available')
+             | first | int }}
+      tags: [always]
+
+  # ---------------------------------------------------------------------------
+  # ROLES — a ordem importa
+  #
+  #   common     -> usuário e pacotes; tudo depende disso
+  #   storage    -> monta o disco antes que alguém tente escrever nele
+  #   selinux    -> booleans antes dos containers subirem
+  #   firewall   -> regras antes dos serviços começarem a escutar
+  #   docker     -> engine antes das stacks
+  #   ingress    -> camada de entrada
+  #   media      -> stacks de mídia
+  #   gameserver -> stacks e daemons de jogo
+  # ---------------------------------------------------------------------------
+  roles:
+    - { role: common,     tags: [common] }
+    - { role: storage,    tags: [storage] }
+    - { role: selinux,    tags: [selinux] }
+    - { role: firewall,   tags: [firewall] }
+    - { role: docker,     tags: [docker] }
+    - { role: ingress,    tags: [ingress] }
+    - { role: media,      tags: [media] }
+    - { role: gameserver, tags: [gameserver] }
+
+  # ---------------------------------------------------------------------------
+  # POST_TASKS — verificação do resultado
+  #
+  # Um playbook que termina sem erro não prova que o host está correto: prova
+  # apenas que nenhuma task falhou. São coisas diferentes. Estas tasks VERIFICAM
+  # o resultado.
+  #
+  # O bug do playit.service (dois-pontos em vez de "=") sobreviveu meses
+  # justamente porque nada nunca conferiu. O systemd descartava a linha em
+  # silêncio e ninguém lia o dmesg.
+  # ---------------------------------------------------------------------------
+  post_tasks:
+
+    - name: Aplicar mudanças pendentes antes de verificar
+      # Handlers normalmente só rodam no FIM do play. Sem este flush, as
+      # verificações abaixo testariam a configuração ANTIGA, ainda em memória,
+      # e dariam um falso "tudo certo".
+      ansible.builtin.meta: flush_handlers
+      tags: [always]
+
+    - name: "Verificação 1 — sintaxe das units systemd"
+      # check_mode: false — ver explicação detalhada em roles/storage.
+      # Resumo: command não roda em --check, a variável registrada fica sem
+      # .stdout, e o loop de relatório abaixo quebraria com erro de atributo.
+      ansible.builtin.command: "systemd-analyze verify /etc/systemd/system/{{ item }}.service"
+      loop: [cloudflared, ttyd, playit, wings]
+      register: unit_verify
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      tags: [always, validate]
+
+    - name: "Verificação 1 — relatório"
+      ansible.builtin.debug:
+        msg: >-
+          {{ item.item }}.service:
+          {{ 'OK' if (item.stderr | default('') | length == 0) else item.stderr }}
+      loop: "{{ unit_verify.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item | default('?') }}"
+      when: unit_verify.results is defined
+      tags: [always, validate]
+
+    - name: "Verificação 2 — configuração do nginx"
+      ansible.builtin.command: nginx -t
+      register: nginx_check
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      tags: [always, validate]
+
+    - name: "Verificação 2 — ausência de server_name duplicado"
+      # O nginx escreve em stderr mesmo quando passa, então não dá para usar o
+      # código de saída. O que importa é a ausência do aviso "conflicting
+      # server name" — o sintoma do painel.conf duplicado.
+      ansible.builtin.assert:
+        that:
+          - "'conflicting server name' not in (nginx_check.stderr | default(''))"
+        fail_msg: >-
+          Ainda existe server_name duplicado no nginx:
+          {{ nginx_check.stderr | default('') }}
+        success_msg: "nginx sem conflitos de server_name."
+      when: nginx_check.stderr is defined
+      tags: [always, validate]
+
+    - name: "Verificação 3 — compose de cada stack é válido"
+      # `docker compose config -q` faz o parse completo do arquivo, resolve
+      # variáveis e valida o esquema. Pega erro de indentação e chave inválida
+      # ANTES de você tentar subir a stack.
+      ansible.builtin.command:
+        cmd: docker compose config -q
+        chdir: "{{ app_home }}/docker/{{ item }}"
+      become_user: "{{ app_user }}"
+      loop: "{{ docker_stacks }}"
+      changed_when: false
+      check_mode: false
+      tags: [always, validate]
+
+    - name: Resumo final
+      ansible.builtin.debug:
+        msg:
+          - "Convergência concluída em {{ inventory_hostname }}."
+          - ""
+          - "Próximos passos:"
+          - "  1. ansible-playbook playbooks/services.yml --limit {{ ansible_play_hosts_all | length > 1 | ternary('<grupo>', inventory_hostname) }}"
+          - "  2. ansible-playbook playbooks/diag.yml"
+          - "  3. Rode este playbook de novo — deve dar changed=0."
+      tags: [always]

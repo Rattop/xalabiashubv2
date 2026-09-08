@@ -1,0 +1,52 @@
+=============================================================================
+XALABIASHUB - RELATÓRIO DE DIAGNÓSTICO
+Host:  {{ inventory_hostname }} ({{ ansible_host }})
+Data:  {{ ansible_date_time.iso8601 }}
+=============================================================================
+
+[ SISTEMA ]
+{{ fastfetch_out.stdout | default('fastfetch indisponível') }}
+
+[ SERVIÇOS NATIVOS ]
+{% for s in svc_state.results %}
+  {{ "%-14s" | format(s.item) }} {{ s.stdout | default('DESCONHECIDO') | upper }}
+{% endfor %}
+
+[ CONTAINERS ]
+{{ docker_ps.stdout | default('nenhum') }}
+
+[ NGINX ]
+{{ nginx_syntax.stderr | default(nginx_syntax.stdout) | default('n/a') }}
+
+[ DISCO ]
+{{ disk_usage.stdout }}
+
+[ SMART ]
+{% for d in smart_health.results %}
+--- {{ d.item }} ---
+{{ d.stdout | default(d.stderr) | default('n/a') }}
+{% endfor %}
+
+[ ERROS CRÍTICOS DO BOOT ]
+{{ journal_errors.stdout | default('nenhum') }}
+
+[ NEGAÇÕES SELINUX (hoje) ]
+{{ avc_denials.stdout | default('nenhuma') }}
+
+[ LOGS DOS SERVIÇOS ]
+{% for l in svc_logs.results %}
+--- {{ l.item | upper }} ---
+{{ l.stdout | default('sem log') }}
+
+{% endfor %}
+
+[ LOGS DOS CONTAINERS ]
+{% for c in container_logs.results %}
+--- {{ c.item | upper }} ---
+{{ c.stdout | default('') }}
+{{ c.stderr | default('') }}
+
+{% endfor %}
+=============================================================================
+FIM
+=============================================================================

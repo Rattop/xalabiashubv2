@@ -1,0 +1,142 @@
+---
+# =============================================================================
+# diag.yml — diagnóstico somente leitura. Não muda nada.
+#
+# Diferença central para o antigo: além de coletar logs, este AFIRMA coisas.
+# Um relatório que só despeja texto exige que alguém leia com atenção; um
+# playbook que falha quando o estado está errado avisa sozinho.
+# =============================================================================
+
+- name: Diagnóstico do XalabiasHub
+  hosts: xalabiashub
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Resumo do sistema
+      ansible.builtin.command: fastfetch --pipe --logo none
+      register: fastfetch_out
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Estado dos serviços nativos
+      ansible.builtin.command: "systemctl is-active {{ item }}"
+      loop: "{{ systemd_services }}"
+      register: svc_state
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    # CORREÇÃO (B9): a versão anterior tinha `failed_when: false` neste
+    # assert — ou seja, ele NUNCA falhava, apesar do nome dizer o contrário.
+    # Uma verificação que não pode falhar não é verificação, é decoração.
+    #
+    # Agora ele falha de verdade. `ignore_errors: true` permite que o play
+    # continue para gerar o relatório completo, mas a falha FICA REGISTRADA
+    # no resumo final da execução — que é o comportamento útil.
+    - name: Serviços inativos são falha
+      ansible.builtin.assert:
+        that: "item.stdout | default('') == 'active'"
+        fail_msg: "Serviço {{ item.item }} está {{ item.stdout | default('desconhecido') }}, esperado 'active'."
+        quiet: true
+      loop: "{{ svc_state.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item | default('?') }}"
+      ignore_errors: true
+      register: svc_assert
+      when: svc_state.results is defined
+
+    - name: Containers em execução
+      ansible.builtin.command: docker ps --format '{% raw %}{{.Names}}\t{{.Status}}{% endraw %}'
+      register: docker_ps
+      changed_when: false
+      check_mode: false
+
+    - name: Sintaxe do nginx
+      ansible.builtin.command: nginx -t
+      register: nginx_syntax
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Uso de disco
+      ansible.builtin.command: df -hT
+      register: disk_usage
+      changed_when: false
+      check_mode: false
+
+    # O HD de mídia estava em 96% na auditoria. Aviso, não falha: é disco de
+    # dados, e você decidiu tratar isso separadamente.
+    - name: Alerta de disco cheio
+      ansible.builtin.debug:
+        msg: "ATENÇÃO: {{ item.mount }} em {{ (100 - (item.size_available / item.size_total * 100)) | round(1) }}% de uso."
+      loop: "{{ ansible_mounts }}"
+      loop_control:
+        label: "{{ item.mount }}"
+      when:
+        - item.size_total > 0
+        - (item.size_available / item.size_total) < 0.10
+
+    - name: Saúde SMART dos discos
+      ansible.builtin.command: "smartctl -H {{ item }}"
+      loop: "{{ ansible_devices.keys() | select('match', '^sd') | map('regex_replace', '^', '/dev/') | list }}"
+      register: smart_health
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Erros críticos do boot atual
+      ansible.builtin.command: journalctl -p 3 -b --no-pager -n 40
+      register: journal_errors
+      changed_when: false
+      check_mode: false
+
+    - name: Logs dos serviços nativos
+      ansible.builtin.command: "journalctl -u {{ item }} -n 20 --no-pager"
+      loop: "{{ systemd_services }}"
+      register: svc_logs
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Logs dos containers
+      ansible.builtin.command: "docker logs --tail 20 {{ item }}"
+      loop: "{{ docker_stacks }}"
+      register: container_logs
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Negações SELinux recentes
+      ansible.builtin.command: ausearch -m avc -ts today
+      register: avc_denials
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Diretório de relatórios
+      ansible.builtin.file:
+        path: "{{ playbook_dir }}/../reports"
+        state: directory
+        mode: '0700'
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    # mode 0600: o relatório inclui logs, e logs frequentemente carregam
+    # tokens em URL. O diag antigo gravava com permissão padrão.
+    - name: Salvar relatório no control node
+      ansible.builtin.template:
+        src: ../templates/diag-report.j2
+        dest: "{{ playbook_dir }}/../reports/diag_{{ inventory_hostname }}_{{ ansible_date_time.iso8601_basic_short }}.log"
+        mode: '0600'
+      delegate_to: localhost
+      become: false
+
+    - name: Resumo em tela
+      ansible.builtin.debug:
+        msg: >-
+          Serviços: {{ svc_state.results | selectattr('stdout','equalto','active') | list | length }}/{{ systemd_services | length }} ativos.
+          nginx: {{ 'OK' if 'successful' in nginx_syntax.stderr else 'PROBLEMA' }}.
+          Relatório completo salvo em reports/.

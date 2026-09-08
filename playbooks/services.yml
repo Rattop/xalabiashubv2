@@ -1,0 +1,57 @@
+---
+# =============================================================================
+# services.yml — garante que tudo está de pé. Não instala, não atualiza.
+# É o playbook de "voltar ao normal" depois de reboot ou de mexer à mão.
+# =============================================================================
+
+- name: Garantir serviços e stacks ativos
+  hosts: xalabiashub
+  become: true
+  gather_facts: true
+
+  tasks:
+    # O setup.yml antigo não instalava cloudflared, playit, ttyd nem wings —
+    # só o oldpbs/setup.yml fazia. O services.yml antigo então tentava iniciar
+    # serviços cujos binários podiam não existir, e falhava de forma opaca.
+    # Aqui a ausência é diagnosticada antes de tentar iniciar.
+    - name: Binários dos serviços nativos presentes
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /usr/bin/cloudflared
+        - /usr/local/bin/ttyd
+        - /usr/local/bin/playit
+        - /usr/local/bin/wings
+      register: svc_bins
+
+    - name: Falha clara se algum binário faltar
+      ansible.builtin.fail:
+        msg: >-
+          Binário ausente: {{ item.item }}.
+          Rode playbooks/setup.yml antes deste playbook.
+      when: not item.stat.exists
+      loop: "{{ svc_bins.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Serviços systemd ativos e habilitados
+      ansible.builtin.service:
+        name: "{{ item }}"
+        state: started
+        enabled: true
+      loop: "{{ systemd_services }}"
+
+    - name: Stacks Docker de pé
+      ansible.builtin.command:
+        cmd: docker compose up -d --remove-orphans
+        chdir: "{{ app_home }}/docker/{{ item }}"
+      become_user: "{{ app_user }}"
+      loop: "{{ docker_stacks }}"
+      register: compose_up
+      # O `docker compose up` escreve progresso em STDERR, não em stdout.
+      # O services.yml antigo checava só stdout, então esta task NUNCA
+      # reportava changed — mesmo criando containers do zero.
+      changed_when: >-
+        'Created' in (compose_up.stderr | default('')) or
+        'Started' in (compose_up.stderr | default('')) or
+        'Recreated' in (compose_up.stderr | default(''))
