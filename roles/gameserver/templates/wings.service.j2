@@ -1,0 +1,24 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Pelican Wings Daemon
+After=docker.service
+Requires=docker.service
+PartOf=docker.service
+
+[Service]
+# Wings controla o socket do Docker e gerencia containers de jogo:
+# root aqui é inerente ao desenho do produto, não descuido.
+User=root
+WorkingDirectory=/var/lib/pelican
+LimitNOFILE=4096
+PIDFile=/run/wings/daemon.pid
+RuntimeDirectory=wings
+ExecStart=/usr/local/bin/wings
+Restart=on-failure
+RestartSec=5s
+
+# StartLimitInterval pertence a [Unit], não a [Service]. Na unit antiga
+# estava no bloco errado e era silenciosamente ignorado.
+
+[Install]
+WantedBy=multi-user.target

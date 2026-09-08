@@ -1,0 +1,214 @@
+---
+# =============================================================================
+# ROLE: gameserver
+# -----------------------------------------------------------------------------
+# O QUE FAZ
+#   Provisiona a plataforma de servidores de jogo: o Pelican Panel (interface
+#   web, em Docker), o Wings (daemon que cria os containers de jogo) e o
+#   Playit (túnel para expor servidores de jogo sem abrir porta no roteador).
+#
+# ARQUITETURA — por que são três peças
+#
+#   Pelican Panel  (container)  interface web; guarda usuários, servidores e
+#                               configurações num MariaDB. Não toca no Docker.
+#   Wings          (systemd)    daemon no HOST. Recebe ordens do painel pela
+#                               API e cria/destrói os containers de jogo. Roda
+#                               como root porque controla o socket do Docker.
+#   Playit         (systemd)    túnel de saída para os servidores de jogo,
+#                               equivalente ao cloudflared mas para TCP/UDP
+#                               bruto (o Cloudflare Tunnel gratuito só faz HTTP).
+#
+#   Painel e Wings conversam por HTTP autenticado com token. Um bug histórico
+#   deste projeto foi justamente esse token sendo corrompido por um wrapper de
+#   serialização do PHP inserido via Laravel Tinker — ver README.
+# =============================================================================
+
+- name: Validar que os segredos do vault foram definidos
+  # Falha CEDO e com mensagem útil. Sem isto, o playbook geraria um compose
+  # com "TROQUE-ME" como senha do banco e você só descobriria quando o painel
+  # não conectasse — várias tasks depois, com erro genérico.
+  #
+  # `assert` é o módulo certo para pré-condições: ele não muda nada, só
+  # verifica, e funciona em --check.
+  ansible.builtin.assert:
+    that:
+      - vault_pelican_db_password is defined
+      - vault_pelican_db_password != "TROQUE-ME"
+      - vault_pelican_db_root_password is defined
+      - vault_pelican_db_root_password != "TROQUE-ME"
+      - vault_pelican_redis_password is defined
+      - vault_pelican_redis_password != "TROQUE-ME"
+    fail_msg: |
+      Segredos do Pelican ausentes ou ainda no valor de exemplo.
+
+          cp group_vars/all/vault.yml.example group_vars/all/vault.yml
+          openssl rand -base64 24        # uma vez por senha
+          ansible-vault encrypt group_vars/all/vault.yml
+
+      Depois rode o playbook com --ask-vault-pass.
+    success_msg: "Segredos do vault carregados."
+  tags: [gameserver, pelican]
+
+# -----------------------------------------------------------------------------
+# BLOCO 1 — Pelican Panel (Docker)
+# -----------------------------------------------------------------------------
+
+- name: Diretórios do Pelican Panel
+  ansible.builtin.file:
+    path: "{{ app_home }}/docker/pelican-panel/{{ item }}"
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0750'
+  loop:
+    - ""                      # raiz da stack
+    - var/www/html/storage    # uploads e cache do Laravel
+    - var/lib/mysql           # DADOS DO BANCO — nunca apague
+  tags: [gameserver, pelican]
+
+- name: Caddyfile interno do painel
+  # Configuração do servidor web INTERNO do container do painel. Não confundir
+  # com o nginx do host: o nginx faz proxy reverso para a porta 8081, e o Caddy
+  # dentro do container é quem realmente serve o PHP.
+  #
+  # NOTA DE PROCESSO — por que esta task nasceu desativada:
+  # o Caddyfile do host tinha sido criado à mão e seu conteúdo não havia sido
+  # capturado na auditoria inicial (só o caminho apareceu na listagem). O
+  # template foi escrito por dedução, a partir da imagem oficial do Pelican.
+  #
+  # Sobrescrever um arquivo de produção cujo conteúdo você não conhece é como
+  # aplicar um patch sem ler o diff — pode funcionar, mas você não sabe.
+  # A task ficou atrás de `pelican_manage_caddyfile: false` até que o conteúdo
+  # real fosse extraído e comparado. Resultado: idênticos linha a linha,
+  # divergindo apenas em comentários. Só então foi ativada.
+  #
+  # `backup: true` guarda uma cópia datada antes de qualquer sobrescrita —
+  # a rede de segurança para o caso de o template divergir no futuro.
+  ansible.builtin.template:
+    src: Caddyfile.j2
+    dest: "{{ app_home }}/docker/pelican-panel/Caddyfile"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0640'
+    backup: true      # guarda uma cópia datada antes de sobrescrever
+  when: pelican_manage_caddyfile | bool
+  tags: [gameserver, pelican]
+
+- name: Compose do Pelican Panel
+  # Este arquivo é o motivo principal de o projeto usar ansible-vault.
+  # A versão anterior tinha as senhas do MariaDB em texto claro, commitadas
+  # num repositório público. Agora elas vêm do vault cifrado e nunca tocam
+  # o Git.
+  ansible.builtin.template:
+    src: pelican-compose.yml.j2
+    dest: "{{ app_home }}/docker/pelican-panel/docker-compose.yml"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0640'
+  tags: [gameserver, pelican]
+
+# -----------------------------------------------------------------------------
+# BLOCO 2 — Wings (daemon no host)
+# -----------------------------------------------------------------------------
+
+- name: Diretório de estado do Wings
+  # Sem `mode`: o diretório já existe em produção com conteúdo ativo (volumes
+  # de servidores de jogo em execução). Forçar permissão aqui poderia tornar
+  # os volumes inacessíveis para os containers de jogo, que rodam com UID
+  # próprio (993 neste host). Convergir NÃO significa reescrever tudo.
+  ansible.builtin.file:
+    path: /var/lib/pelican
+    state: directory
+    owner: root
+    group: root
+  tags: [gameserver, wings]
+
+- name: Binário do Wings
+  ansible.builtin.get_url:
+    url: "{{ wings_url }}"
+    dest: /usr/local/bin/wings
+    checksum: "{{ wings_checksum | default(omit, true) }}"
+    owner: root
+    group: root
+    mode: '0755'
+  notify: Restart wings
+  tags: [gameserver, wings]
+
+- name: Unit systemd do Wings
+  ansible.builtin.template:
+    src: wings.service.j2
+    dest: /etc/systemd/system/wings.service
+    owner: root
+    group: root
+    mode: '0644'
+  notify:
+    - Reload systemd
+    - Restart wings
+  tags: [gameserver, wings]
+
+- name: Corrigir permissão da chave SSH do SFTP
+  # VULNERABILIDADE REAL ENCONTRADA NA AUDITORIA:
+  #
+  #     -rwxrwxrwx. 1 pelican pesign 119 /var/lib/pelican/volumes/.sftp/id_ed25519
+  #
+  # Uma chave PRIVADA com modo 0777: qualquer processo local podia LÊ-LA
+  # (roubar acesso SFTP ao painel) ou SUBSTITUÍ-LA (injetar a própria chave).
+  # O grupo "pesign" é acidental — nada a ver com o Pelican, veio de um GID
+  # herdado na criação do arquivo.
+  #
+  # O Wings roda como root, então restringir para root:root não afeta o
+  # funcionamento.
+  #
+  # `failed_when: false`: num host novo o arquivo ainda não existe, e isso é
+  # normal — o Wings o gera na primeira inicialização.
+  ansible.builtin.file:
+    path: /var/lib/pelican/volumes/.sftp/id_ed25519
+    owner: root
+    group: root
+    mode: '0600'
+  failed_when: false
+  tags: [gameserver, wings, security]
+
+- name: Corrigir permissão do diretório da chave SFTP
+  # NOTA IMPORTANTE: apenas .sftp/ é ajustado, NÃO o /var/lib/pelican/volumes/
+  # acima dele. Aquele diretório está 0777 de propósito no design do Pelican —
+  # cada servidor de jogo roda com UID próprio e precisa acessar seu volume.
+  # Endurecê-lo quebraria todos os servidores.
+  ansible.builtin.file:
+    path: /var/lib/pelican/volumes/.sftp
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+  failed_when: false
+  tags: [gameserver, wings, security]
+
+# -----------------------------------------------------------------------------
+# BLOCO 3 — Playit
+# -----------------------------------------------------------------------------
+
+- name: Binário do Playit
+  ansible.builtin.get_url:
+    url: "{{ playit_url }}"
+    dest: /usr/local/bin/playit
+    checksum: "{{ playit_checksum | default(omit, true) }}"
+    owner: root
+    group: root
+    mode: '0755'
+  notify: Restart playit
+  tags: [gameserver, playit]
+
+- name: Unit systemd do Playit
+  # A unit ANTIGA tinha três defeitos que o systemd registrava em TODO boot —
+  # visíveis no dmesg durante a auditoria. Estão documentados dentro do
+  # template, que é onde fazem sentido.
+  ansible.builtin.template:
+    src: playit.service.j2
+    dest: /etc/systemd/system/playit.service
+    owner: root
+    group: root
+    mode: '0644'
+  notify:
+    - Reload systemd
+    - Restart playit
+  tags: [gameserver, playit]

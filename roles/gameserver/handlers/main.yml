@@ -1,0 +1,14 @@
+---
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Restart wings
+  ansible.builtin.service:
+    name: wings
+    state: restarted
+
+- name: Restart playit
+  ansible.builtin.service:
+    name: playit
+    state: restarted

@@ -1,0 +1,44 @@
+# {{ ansible_managed }}
+#
+# A unit antiga tinha três defeitos que o systemd registrava em todo boot
+# (visíveis no dmesg da auditoria):
+#   1. "StartLimitIntervalSec:60" com dois-pontos em vez de "=" — linha
+#      inteira descartada ("Missing '=', ignoring line")
+#   2. StartLimitIntervalSec/StartLimitBurst no bloco [Service]; pertencem a
+#      [Unit] ("Unknown key ... ignoring")
+#   3. Restart= declarado duas vezes (always, depois on-failure): a segunda
+#      vencia em silêncio, contrariando a primeira
+[Unit]
+Description=Playit.gg Tunnel
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=120
+StartLimitBurst=3
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/playit
+Restart=on-failure
+RestartSec=15
+User=root
+
+# O comentário antigo dizia "/run/playit/ owned by ratto" enquanto a
+# diretiva logo acima era User=root — descrição e código discordavam.
+RuntimeDirectory=playit
+RuntimeDirectoryMode=0750
+Environment="XDG_RUNTIME_DIR=/run/playit"
+
+# Binário de terceiro sem política SELinux própria. Mantido unconfined pelo
+# mesmo motivo do Jellyfin; o contrapeso é o endurecimento do systemd abaixo.
+SELinuxContext=system_u:system_r:unconfined_t:s0
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ReadWritePaths=/root/.config/playit_gg
+
+[Install]
+WantedBy=multi-user.target

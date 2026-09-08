@@ -1,0 +1,136 @@
+# {{ ansible_managed }}
+#
+# Pelican Panel — painel web de servidores de jogo.
+# Acesso público: https://painel.{{ base_domain }}
+#
+# Todas as senhas abaixo vêm do ansible-vault. As anteriores estavam em texto
+# claro neste arquivo, commitadas num repositório público, e continuam no
+# histórico do Git — ver README, seção "Incidente de credenciais".
+#
+# Elas NÃO são repetidas aqui de propósito: um segredo comprometido não deve
+# ser reproduzido nem em comentário. Scanners sinalizam, e leitores copiam.
+services:
+
+  # ---------------------------------------------------------------------------
+  # Aplicação (Laravel + PHP-FPM + Caddy interno)
+  # ---------------------------------------------------------------------------
+  pelican:
+    image: ghcr.io/pelican-dev/panel:latest
+    container_name: pelican-panel-pelican-1
+    restart: always
+
+{% if pelican_privileged %}
+    privileged: true
+{% endif %}
+    security_opt:
+      - no-new-privileges:true
+{% if pelican_seccomp_unconfined %}
+      # seccomp:unconfined desliga o filtro de chamadas de sistema do kernel.
+      # Era um remendo para o bug do token de autenticação, que já foi
+      # resolvido na raiz. Mantido só como caminho de reversão.
+      - seccomp:unconfined
+{% endif %}
+      - label:disable
+
+    ports:
+      # Publicado APENAS em loopback. Quem serve isto para a internet é o
+      # nginx (proxy reverso) e depois o cloudflared. O container nunca fica
+      # exposto direto.
+      - "127.0.0.1:8081:80"
+
+    environment:
+      - APP_ENV=production
+      - APP_TIMEZONE={{ timezone }}
+      - APP_URL=https://painel.{{ base_domain }}
+
+      # ERRO DE DIGITAÇÃO CORRIGIDO: era BEGIND_PROXY no compose original.
+      # Como o nome não correspondia a nenhuma variável esperada pela
+      # aplicação, ela era simplesmente ignorada — e o painel nunca soube que
+      # estava atrás de um proxy. Bugs assim não geram erro; geram
+      # comportamento silenciosamente errado.
+      - BEHIND_PROXY=true
+      - FORCE_HTTPS=true
+      - LE_EMAIL={{ vault_pelican_admin_email }}
+
+      # TRUSTED_PROXIES era "*" — o Laravel aceitava o cabeçalho
+      # X-Forwarded-For de QUALQUER origem. Consequências práticas:
+      #   - forjar o IP de origem nos logs de auditoria
+      #   - contornar o rate-limit de tentativas de login
+      #   - enganar qualquer regra baseada em IP
+      # Agora só a bridge local e as faixas oficiais do Cloudflare.
+      - TRUSTED_PROXIES={{ pelican_trusted_proxies }}
+
+      # --- Banco de dados ---
+      - DB_CONNECTION=mysql
+      - DB_HOST=database
+      - DB_PORT=3306
+      - DB_DATABASE=pelican
+      - DB_USERNAME=pelican
+      - DB_PASSWORD={{ vault_pelican_db_password }}
+
+      # --- Cache ---
+      # CORREÇÃO IMPORTANTE (B3): a primeira versão deste arquivo adicionou
+      # --requirepass no Redis mas ESQUECEU de informar a senha ao painel.
+      # Resultado: o painel não conseguiria conectar no cache e a aplicação
+      # falharia no start.
+      #
+      # LIÇÃO: ao adicionar autenticação a um serviço, sempre percorra TODOS
+      # os clientes dele. Segurança que quebra a aplicação não é segurança —
+      # é indisponibilidade, e vai ser revertida no primeiro incidente.
+      - REDIS_HOST=cache
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD={{ vault_pelican_redis_password }}
+
+    volumes:
+      - ./var/www/html/storage:/app/storage:z
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+
+    depends_on:
+      - database
+      - cache
+
+  # ---------------------------------------------------------------------------
+  # Banco de dados
+  # ---------------------------------------------------------------------------
+  database:
+    # Fixado em {{ mariadb_image }} DE PROPÓSITO.
+    # O 10.5 saiu de suporte em junho/2025 e deveria subir para 11.x LTS, mas
+    # essa é uma MIGRAÇÃO DE DADOS, não uma mudança de configuração. Um
+    # playbook de convergência não é o lugar para migrar banco: se algo der
+    # errado no meio, você perde os dados sem ponto de retorno claro.
+    # Ver README, seção "Dívidas conhecidas".
+    image: {{ mariadb_image }}
+    container_name: pelican-panel-database-1
+    restart: always
+    security_opt:
+      - no-new-privileges:true
+    command: --default-authentication-plugin=mysql_native_password
+    volumes:
+      # Dados persistidos no host, não em volume Docker nomeado: um
+      # `docker compose down -v` distraído não destrói o banco.
+      - ./var/lib/mysql:/var/lib/mysql:z
+    environment:
+      - MYSQL_DATABASE=pelican
+      - MYSQL_USER=pelican
+      - MYSQL_PASSWORD={{ vault_pelican_db_password }}
+      - MYSQL_ROOT_PASSWORD={{ vault_pelican_db_root_password }}
+
+  # ---------------------------------------------------------------------------
+  # Cache
+  # ---------------------------------------------------------------------------
+  cache:
+    image: redis:alpine
+    container_name: pelican-panel-cache-1
+    restart: always
+    security_opt:
+      - no-new-privileges:true
+    # O log do Redis avisava em toda inicialização:
+    #   "Redis does not require authentication and is not protected by
+    #    network restrictions"
+    # Hoje não há porta publicada, então o risco é baixo — mas a senha
+    # elimina a dependência de "ninguém publicar essa porta por engano".
+    # Defesa em profundidade: não confie numa única camada.
+    command: >-
+      redis-server
+      --requirepass {{ vault_pelican_redis_password }}
+      --save 60 1
