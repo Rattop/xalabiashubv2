@@ -1,0 +1,16 @@
+# Host real bare-metal.
+[prod]
+server_prod ansible_host=192.168.1.88
+
+# Clone virtual na workstation (validação antes da produção).
+# Ajuste o IP para o da sua VM.
+[lab]
+server_lab ansible_host=192.168.122.50
+
+[xalabiashub:children]
+prod
+lab
+
+[xalabiashub:vars]
+ansible_user               = ratto
+ansible_python_interpreter = /usr/bin/python3

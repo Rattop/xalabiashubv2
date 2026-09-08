@@ -1,0 +1,26 @@
+# --- Segredos: nada aqui pode chegar ao GitHub -------------------------------
+group_vars/*/vault.yml
+host_vars/*/vault.yml
+*.vault.yml
+.vault-pass
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+*.env
+.env*
+
+# Credenciais do Cloudflare Tunnel
+roles/ingress/files/cloudflared/*.json
+roles/ingress/files/cloudflared/cert.pem
+
+# --- Ruído de execução -------------------------------------------------------
+*.retry
+*.log
+.vagrant/
+__pycache__/
+*.pyc
+
+# --- Relatórios de diagnóstico (podem conter tokens vindos de logs) ----------
+reports/
+inventory.ini
