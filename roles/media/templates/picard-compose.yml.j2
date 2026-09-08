@@ -1,0 +1,37 @@
+# {{ ansible_managed }}
+#
+# MusicBrainz Picard — organizador de metadados musicais.
+# Acesso público: https://capas.{{ base_domain }} (via túnel Cloudflare)
+#
+# CUIDADO ESPECIAL COM ESTE CONTAINER:
+# ele não é uma aplicação web comum — é um DESKTOP GRÁFICO COMPLETO exposto
+# por VNC/navegador. A imagem vem com WEB_AUTHENTICATION=0 e VNC_PASSWORD
+# vazio, ou seja: sem nenhuma autenticação própria.
+#
+# Deixá-lo escutando em 0.0.0.0 (como estava antes) dava a qualquer
+# dispositivo da rede local uma sessão gráfica interativa com permissão de
+# ESCRITA sobre toda a biblioteca de música. É por isso que o bind local
+# importa mais aqui do que nos outros dois.
+services:
+  picard:
+    image: mikenye/picard
+    container_name: picard
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
+    ports:
+      - "{{ media_bind_address }}:5800:5800"
+
+    environment:
+      - USER_ID={{ app_uid }}
+      - GROUP_ID={{ app_gid }}
+      - TZ={{ timezone }}
+      - DISPLAY_WIDTH=1280
+      - DISPLAY_HEIGHT=768
+
+    volumes:
+      - ./config:/config:z
+      # Escrita é NECESSÁRIA: a função do Picard é renomear arquivos e gravar
+      # tags. É o único container com permissão de escrita na música.
+      - {{ music_dir }}:/music:z

@@ -1,0 +1,114 @@
+---
+# =============================================================================
+# ROLE: media
+# -----------------------------------------------------------------------------
+# O QUE FAZ
+#   Provisiona as três stacks de mídia: Jellyfin (vídeo), Navidrome (música) e
+#   Picard (organização de metadados musicais).
+#
+# COMO OS GIDs DE VÍDEO SÃO RESOLVIDOS — o detalhe mais sutil desta role
+#
+#   Para transcodificar por hardware, o Jellyfin precisa acessar /dev/dri.
+#   No host esses dispositivos pertencem a grupos específicos:
+#       /dev/dri/renderD128  ->  grupo render  (GID 105 neste host)
+#       /dev/dri/card0       ->  grupo video   (GID 39  neste host)
+#
+#   A tentação é escrever `group_add: [video, render]` no compose. ISSO NÃO
+#   FUNCIONA: o Docker resolve nomes de grupo DENTRO do container. O Jellyfin
+#   roda Debian, onde `video` é GID 44 — que não corresponde ao GID 39 do host
+#   AlmaLinux. O container ganharia um grupo irrelevante e o acesso ao
+#   dispositivo continuaria negado.
+#
+#   A solução é passar o GID NUMÉRICO do host. As tasks abaixo descobrem esses
+#   números no host em tempo de execução, para que o playbook funcione mesmo
+#   numa distribuição onde os GIDs sejam outros.
+# =============================================================================
+
+- name: Descobrir GID do grupo render no host
+  # CORREÇÃO (B4). `getent group` consulta a base de usuários do host.
+  # check_mode: false porque é leitura pura e o resultado alimenta um template.
+  ansible.builtin.command: "getent group render"
+  register: render_group
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  tags: [media, jellyfin]
+
+- name: Descobrir GID do grupo video no host
+  ansible.builtin.command: "getent group video"
+  register: video_group
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  tags: [media, jellyfin]
+
+- name: Registrar GIDs de vídeo para uso no compose
+  # `getent group render` devolve algo como "render:x:105:".
+  # Dividimos por ":" e pegamos o terceiro campo (índice 2) = o GID.
+  # O `default` protege contra um host sem esses grupos (uma VM sem GPU).
+  ansible.builtin.set_fact:
+    jellyfin_render_gid: "{{ (render_group.stdout | default('')).split(':')[2] | default('', true) }}"
+    jellyfin_video_gid: "{{ (video_group.stdout | default('')).split(':')[2] | default('', true) }}"
+  tags: [media, jellyfin]
+
+- name: Mostrar GIDs detectados
+  ansible.builtin.debug:
+    msg: >-
+      GIDs de vídeo neste host — render: {{ jellyfin_render_gid | default('ausente') }},
+      video: {{ jellyfin_video_gid | default('ausente') }}.
+      {{ 'Transcodificação por hardware disponível.'
+         if jellyfin_render_gid else
+         'Sem grupo render: o Jellyfin usará transcodificação por software (CPU).' }}
+  tags: [media, jellyfin]
+
+- name: Diretórios das stacks de mídia
+  ansible.builtin.file:
+    path: "{{ app_home }}/docker/{{ item }}"
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0750'
+  loop: [jellyfin, navidrome, picard]
+  tags: [media]
+
+- name: Diretórios de dados persistentes
+  # Estes diretórios guardam o ESTADO das aplicações: banco do Jellyfin,
+  # biblioteca indexada do Navidrome, configuração do Picard. Se sumirem, você
+  # perde histórico de reprodução, usuários e metadados.
+  #
+  # Ficam no host (bind mount), não em volumes Docker nomeados, para que um
+  # `docker compose down -v` acidental não os destrua.
+  ansible.builtin.file:
+    path: "{{ app_home }}/docker/{{ item }}"
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0750'
+  loop:
+    - jellyfin/config
+    - jellyfin/cache
+    - navidrome/data
+    - picard/config
+  tags: [media]
+
+- name: Compose files das stacks de mídia
+  ansible.builtin.template:
+    src: "{{ item }}-compose.yml.j2"
+    dest: "{{ app_home }}/docker/{{ item }}/docker-compose.yml"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0640'
+  loop: [jellyfin, navidrome, picard]
+  tags: [media]
+
+- name: Remover diretório órfão ~/jellyfin
+  # Sobra de uma tentativa anterior, de antes das stacks migrarem para
+  # ~/docker/. A auditoria encontrou ~/jellyfin/{cache,config} vazios e de
+  # dono root, dentro do home do usuário.
+  #
+  # Limpeza faz parte da convergência: um repositório de IaC que só ADICIONA
+  # coisas deixa um rastro de restos que ninguém sabe se pode apagar.
+  ansible.builtin.file:
+    path: "{{ app_home }}/jellyfin"
+    state: absent
+  tags: [media, cleanup]

@@ -1,0 +1,73 @@
+# {{ ansible_managed }}
+#
+# Jellyfin — servidor de mídia de vídeo.
+# Acesso público: https://jellyfin.{{ base_domain }} (via túnel Cloudflare)
+services:
+  jellyfin:
+    image: jellyfin/jellyfin:latest
+    container_name: jellyfin
+    restart: unless-stopped
+
+    # network_mode: host é EXIGIDO pelo Jellyfin para descoberta automática
+    # na rede local (DLNA e clientes que buscam o servidor por broadcast).
+    # Custo: o container compartilha a pilha de rede do host, então não há
+    # isolamento de rede nem mapeamento de portas. A porta 8096 fica fechada
+    # para a LAN pelo firewalld, não pelo Docker.
+    network_mode: host
+
+    user: "{{ app_uid }}:{{ app_gid }}"
+
+{% if jellyfin_privileged %}
+    # ATENÇÃO: privileged=true dá ao container capacidades equivalentes a root
+    # no host. Só está aqui como caminho de reversão (ver README).
+    privileged: true
+{% endif %}
+
+    security_opt:
+      # O compose ORIGINAL trazia "no-new-privileges:false" — que EXPLICITAMENTE
+      # PERMITE escalada de privilégio dentro do container. O nome da opção
+      # engana: parece que está desligando algo perigoso, quando na verdade
+      # está desligando a PROTEÇÃO contra escalada.
+      - no-new-privileges:true
+{% if jellyfin_selinux_disable %}
+      # DÍVIDA TÉCNICA ASSUMIDA — ver README, seção "Dívidas conhecidas".
+      # O JIT do .NET precisa de memória executável e o SELinux bloqueia isso
+      # por padrão, causando SIGSEGV no start. O boolean que resolvia
+      # (container_execmem) foi removido na política 42.x do AlmaLinux 10.
+      # A solução correta é uma política customizada, como a do ttyd.
+      - label:disable
+{% endif %}
+
+{% if jellyfin_render_gid or jellyfin_video_gid %}
+    # GIDs NUMÉRICOS do host, descobertos em tempo de execução pela role.
+    # Passar os NOMES ("video", "render") não funciona: o Docker os resolve
+    # dentro do container, onde os números são diferentes.
+    group_add:
+{% if jellyfin_render_gid %}
+      - "{{ jellyfin_render_gid }}"   # grupo render — /dev/dri/renderD128
+{% endif %}
+{% if jellyfin_video_gid %}
+      - "{{ jellyfin_video_gid }}"    # grupo video  — /dev/dri/card0
+{% endif %}
+
+    devices:
+      - /dev/dri/renderD128:/dev/dri/renderD128   # aceleração VAAPI
+      - /dev/dri/card0:/dev/dri/card0
+{% endif %}
+
+    volumes:
+      - ./config:/config:z
+      - ./cache:/cache:z
+      # Biblioteca montada como {{ 'somente leitura' if jellyfin_media_readonly else 'leitura e escrita' }}.
+{% if jellyfin_media_readonly %}
+      # :ro elimina a possibilidade de o Jellyfin (ou um plugin) apagar 1,8 TB
+      # de mídia. Requer que "salvar metadados junto à mídia" esteja DESLIGADO
+      # nas configurações da biblioteca — o padrão do Jellyfin já é assim.
+      - {{ media_root }}:/media:ro
+{% else %}
+      - {{ media_root }}:/media:z
+{% endif %}
+
+    environment:
+      - JELLYFIN_PublishedServerUrl=http://{{ host_lan_ip }}:8096
+      - TZ={{ timezone }}

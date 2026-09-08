@@ -1,0 +1,38 @@
+# {{ ansible_managed }}
+#
+# Navidrome — servidor de música compatível com Subsonic.
+# Acesso público: https://music.{{ base_domain }} (via túnel Cloudflare)
+services:
+  navidrome:
+    image: deluan/navidrome:latest
+    container_name: navidrome
+    restart: unless-stopped
+    user: "{{ app_uid }}:{{ app_gid }}"
+    security_opt:
+      - no-new-privileges:true
+
+    ports:
+      # O prefixo {{ media_bind_address }} decide QUEM alcança este serviço.
+      #
+      #   127.0.0.1 -> só o próprio host. Acesso externo apenas pelo túnel
+      #                Cloudflare, que passa pelo Access (autenticação).
+      #   0.0.0.0   -> qualquer dispositivo da rede local, SEM autenticação
+      #                de borda. Era assim antes deste projeto.
+      #
+      # Se você usa um app de música apontando direto para o IP do servidor na
+      # LAN, mude media_bind_address em group_vars — mas entenda o que abre.
+      - "{{ media_bind_address }}:4533:4533"
+
+    environment:
+      ND_DATAFOLDER: /data
+      ND_LOGLEVEL: info
+      ND_SCANSCHEDULE: 1h              # varre a biblioteca de hora em hora
+      ND_DEFAULTLANGUAGE: "pt-BR"
+      ND_ENABLEDOWNLOADS: "true"
+      ND_ENABLETRANSCODINGCONFIG: "true"
+      TZ: "{{ timezone }}"
+
+    volumes:
+      - ./data:/data:z
+      # :ro — o Navidrome só lê e indexa. Quem escreve tags é o Picard.
+      - {{ music_dir }}:/music:ro
