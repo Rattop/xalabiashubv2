@@ -1,0 +1,285 @@
+---
+# =============================================================================
+# ROLE: ingress
+# -----------------------------------------------------------------------------
+# O QUE FAZ
+#   Monta toda a camada de entrada: nginx (proxy reverso), cloudflared (túnel
+#   para a internet) e ttyd (terminal web).
+#
+# COMO O TRÁFEGO CHEGA AQUI — leia isto antes do código
+#
+#   Internet
+#      |
+#      v
+#   Cloudflare (DNS + TLS + Access)
+#      |
+#      | túnel de saída — o host NUNCA abre porta para a internet
+#      v
+#   cloudflared (roda no host, conecta de dentro para fora)
+#      |
+#      +--> localhost:80   -> nginx -> site estático / painel Pelican
+#      +--> localhost:8096 -> Jellyfin
+#      +--> localhost:4533 -> Navidrome
+#      +--> localhost:5800 -> Picard
+#      +--> localhost:7681 -> ttyd
+#
+#   O detalhe que faz isso ser seguro: o roteador não tem NENHUMA porta
+#   redirecionada. O túnel é uma conexão de SAÍDA. Não existe porta aberta
+#   para escanear na internet.
+#
+#   É também por isso que o firewalld pode manter 80, 7681 e 8096 FECHADOS
+#   para a rede local: quem os acessa é o cloudflared, a partir de localhost.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# BLOCO 1 — nginx
+# -----------------------------------------------------------------------------
+
+- name: nginx instalado
+  ansible.builtin.dnf:
+    name: nginx
+    state: present
+  tags: [ingress, nginx]
+
+- name: Configuração principal do nginx
+  # `validate: nginx -t -c %s` roda o teste de sintaxe no arquivo temporário
+  # ANTES de movê-lo para o destino. Se a configuração estiver quebrada, a
+  # task falha e o nginx continua rodando com a config antiga, que funciona.
+  # Sem validate, você escreve lixo, o reload falha e o site cai.
+  ansible.builtin.template:
+    src: nginx.conf.j2
+    dest: /etc/nginx/nginx.conf
+    owner: root
+    group: root
+    mode: '0644'
+    validate: nginx -t -c %s
+  notify: Reload nginx
+  tags: [ingress, nginx]
+
+- name: Remover configuração duplicada painel.conf
+  # BUG REAL ENCONTRADO NA AUDITORIA:
+  # existiam DOIS server blocks declarando o MESMO `server_name` para o painel
+  # — painel.conf e pelican.conf. O nginx avisava em todo start:
+  #
+  #     nginx: [warn] conflicting server name "painel..." on 0.0.0.0:80, ignored
+  #
+  # Ele descartava um dos dois. QUAL sobrevivia dependia da ordem alfabética
+  # com que o glob `conf.d/*.conf` os carregava — ou seja, comportamento
+  # acidental que ninguém escolheu.
+  #
+  # pelican.conf é o que fica, porque tem os `set_real_ip_from` do Cloudflare.
+  # Sem eles, todo log de acesso e todo rate-limit do painel enxerga o IP do
+  # Cloudflare em vez do IP real de quem acessou.
+  #
+  # Esta task usa state=absent em vez de simplesmente "não gerar o arquivo":
+  # num host JÁ PROVISIONADO, não gerar não apaga. O arquivo órfão continuaria
+  # lá para sempre. Convergência significa também remover o que não deve estar.
+  ansible.builtin.file:
+    path: /etc/nginx/conf.d/painel.conf
+    state: absent
+  notify: Reload nginx
+  tags: [ingress, nginx]
+
+- name: Sites do nginx
+  ansible.builtin.template:
+    src: "{{ item }}.conf.j2"
+    dest: "/etc/nginx/conf.d/{{ item }}.conf"
+    owner: root
+    group: root
+    mode: '0644'
+  loop:
+    - xalabiashub    # site estático institucional
+    - pelican        # proxy reverso para o painel de jogos
+  notify: Reload nginx
+  tags: [ingress, nginx]
+
+- name: Diretório raiz do site
+  ansible.builtin.file:
+    path: /var/www
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: [ingress, nginx]
+
+# -----------------------------------------------------------------------------
+# BLOCO 2 — cloudflared
+# -----------------------------------------------------------------------------
+
+- name: Chave GPG do Cloudflare importada
+  # SUBSTITUI `disable_gpg_check: true` do repositório antigo.
+  #
+  # disable_gpg_check manda o dnf instalar qualquer coisa que o servidor
+  # devolver, sem conferir assinatura. Se o repositório for comprometido ou
+  # o DNS for envenenado, você instala o binário do atacante com privilégio
+  # de root e o dnf não reclama.
+  #
+  # Importar a chave é o que torna a verificação possível.
+  ansible.builtin.rpm_key:
+    key: https://pkg.cloudflare.com/cloudflare-main.gpg
+    state: present
+  tags: [ingress, cloudflared]
+
+- name: Repositório do cloudflared
+  ansible.builtin.yum_repository:
+    name: cloudflared
+    description: cloudflared stable
+    baseurl: https://pkg.cloudflare.com/cloudflared/rpm
+    gpgcheck: true
+    gpgkey: https://pkg.cloudflare.com/cloudflare-main.gpg
+    enabled: true
+  tags: [ingress, cloudflared]
+
+- name: cloudflared instalado via RPM
+  ansible.builtin.dnf:
+    name: cloudflared
+    state: present
+  tags: [ingress, cloudflared]
+
+- name: Remover binário órfão do cloudflared em /usr/local/bin
+  # CORREÇÃO (B10) — SITUAÇÃO ENCONTRADA NA AUDITORIA:
+  # existiam DUAS cópias do cloudflared no host. Uma instalada pelo RPM em
+  # /usr/bin, outra baixada à mão em /usr/local/bin. A unit systemd apontava
+  # para a de /usr/local/bin.
+  #
+  # Resultado: `dnf update cloudflared` atualizava um binário que não era o
+  # que estava rodando. O serviço permanecia numa versão antiga (2026.5.2,
+  # com aviso de desatualizado nos logs) indefinidamente.
+  #
+  # Este projeto padroniza no RPM: assinado, atualizável, e com usuário de
+  # serviço próprio criado pelo pacote.
+  ansible.builtin.file:
+    path: /usr/local/bin/cloudflared
+    state: absent
+  tags: [ingress, cloudflared]
+
+- name: Diretório de configuração do cloudflared
+  # CORREÇÃO (B2) — BUG QUE DERRUBARIA O TÚNEL:
+  # a unit systemd deste projeto roda o cloudflared como usuário `cloudflared`
+  # (o RPM cria esse usuário justamente para isso). Mas na primeira versão eu
+  # deixei o diretório 0700 root:root — o processo não conseguiria LER a
+  # própria configuração e o serviço morreria no start.
+  #
+  # Solução: dono root (só root escreve), grupo cloudflared (o serviço lê).
+  # Modo 0750 no diretório e 0640 nos arquivos.
+  #
+  # LIÇÃO: ao trocar o usuário de um serviço, sempre revise quem é dono dos
+  # arquivos que ele precisa ler. É o erro mais comum ao remover privilégio.
+  ansible.builtin.file:
+    path: /etc/cloudflared
+    state: directory
+    owner: root
+    group: cloudflared
+    mode: '0750'
+  tags: [ingress, cloudflared]
+
+- name: Configuração do túnel
+  ansible.builtin.template:
+    src: cloudflared-config.yml.j2
+    dest: /etc/cloudflared/config.yml
+    owner: root
+    group: cloudflared
+    mode: '0640'
+  notify: Restart cloudflared
+  tags: [ingress, cloudflared]
+
+- name: Verificar credencial do túnel
+  # A credencial (<uuid>.json) e o cert.pem NÃO são gerados por este playbook
+  # e NÃO estão no repositório: são segredos emitidos pela Cloudflare.
+  #
+  # `stat` é um módulo de leitura e funciona em --check, ao contrário de um
+  # `command: test -f`.
+  ansible.builtin.stat:
+    path: "/etc/cloudflared/{{ cloudflare_tunnel_id }}.json"
+  register: cf_credential
+  tags: [ingress, cloudflared]
+
+- name: Abortar se a credencial do túnel não existir
+  ansible.builtin.fail:
+    msg: |
+      /etc/cloudflared/{{ cloudflare_tunnel_id }}.json não encontrado.
+
+      Este arquivo é um SEGREDO emitido pela Cloudflare e não pode ser
+      versionado nem gerado pelo playbook.
+
+      Restaure do seu backup seguro, ou crie um túnel novo:
+          cloudflared tunnel login
+          cloudflared tunnel create {{ cloudflare_tunnel_name }}
+      e atualize cloudflare_tunnel_id em group_vars/all/main.yml.
+  when: not cf_credential.stat.exists
+  tags: [ingress, cloudflared]
+
+- name: Permissões das credenciais do cloudflared
+  ansible.builtin.file:
+    path: "{{ item }}"
+    owner: root
+    group: cloudflared
+    mode: '0640'
+  loop:
+    - "/etc/cloudflared/{{ cloudflare_tunnel_id }}.json"
+    - /etc/cloudflared/cert.pem
+  # cert.pem só existe se o túnel foi criado nesta máquina; sua ausência é
+  # normal quando a credencial foi copiada de outro host.
+  failed_when: false
+  tags: [ingress, cloudflared, security]
+
+- name: Remover cópias órfãs de credencial no diretório do usuário
+  # A auditoria encontrou uma SEGUNDA cópia da credencial do túnel e do
+  # cert.pem soltas em /home/ratto — sobra do setup inicial, quando os
+  # arquivos foram criados lá e depois copiados para /etc.
+  #
+  # Duas cópias de um segredo são duas chances de vazá-lo. E a cópia no home
+  # é a pior das duas: fica dentro de um diretório que backup, sync e
+  # ferramentas de dotfiles costumam varrer.
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ app_home }}/{{ cloudflare_tunnel_id }}.json"
+    - "{{ app_home }}/cert.pem"
+  tags: [ingress, cloudflared, security]
+
+- name: Unit systemd do cloudflared
+  ansible.builtin.template:
+    src: cloudflared.service.j2
+    dest: /etc/systemd/system/cloudflared.service
+    owner: root
+    group: root
+    mode: '0644'
+  notify:
+    - Reload systemd
+    - Restart cloudflared
+  tags: [ingress, cloudflared]
+
+# -----------------------------------------------------------------------------
+# BLOCO 3 — ttyd (terminal web)
+# -----------------------------------------------------------------------------
+
+- name: Binário do ttyd
+  # `checksum` é o que separa "baixar da internet" de "baixar da internet com
+  # segurança". O get_url compara o SHA-256 do arquivo recebido com o valor
+  # esperado e ABORTA se não bater.
+  #
+  # Efeito colateral útil: se o arquivo local já bate com o checksum, o
+  # download é pulado inteiro. A task vira no-op e a execução fica mais rápida.
+  ansible.builtin.get_url:
+    url: "{{ ttyd_url }}"
+    dest: /usr/local/bin/ttyd
+    checksum: "{{ ttyd_checksum | default(omit, true) }}"
+    owner: root
+    group: root
+    mode: '0755'
+  notify: Restart ttyd
+  tags: [ingress, ttyd]
+
+- name: Unit systemd do ttyd
+  ansible.builtin.template:
+    src: ttyd.service.j2
+    dest: /etc/systemd/system/ttyd.service
+    owner: root
+    group: root
+    mode: '0644'
+  notify:
+    - Reload systemd
+    - Restart ttyd
+  tags: [ingress, ttyd]

@@ -1,0 +1,30 @@
+# {{ ansible_managed }}
+#
+# Correções sobre a unit antiga:
+#  - comentário falava em "senha do Arch"; o host é AlmaLinux (copy-paste)
+#  - escutava em 0.0.0.0:7681, ou seja, um prompt de login do sistema aberto
+#    para qualquer dispositivo da LAN, sem passar pelo Cloudflare Access
+[Unit]
+Description=TTYD Web Terminal
+After=network.target
+
+[Service]
+Type=simple
+# -i {{ ttyd_bind_interface }} prende o socket ao loopback. O cloudflared
+# conecta por localhost, então ssh.{{ base_domain }} segue funcionando
+# igual; o que some é a exposição direta na rede local.
+# -W mantém o terminal gravável (sem isso o terminal fica só-leitura).
+ExecStart=/usr/local/bin/ttyd -i {{ ttyd_bind_interface }} -p 7681 -W login
+Restart=always
+RestartSec=5s
+User=root
+
+# login(1) precisa de privilégio para trocar de usuário, então User=root é
+# inerente aqui. O que dá para restringir, restringe-se:
+ProtectHome=no
+PrivateTmp=yes
+ProtectKernelModules=yes
+RestrictSUIDSGID=no
+
+[Install]
+WantedBy=multi-user.target

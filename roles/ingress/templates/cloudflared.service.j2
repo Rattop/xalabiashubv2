@@ -1,0 +1,34 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Cloudflare Tunnel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+# Caminho do RPM oficial (/usr/bin), não /usr/local/bin. O host tinha as duas
+# cópias: a do RPM e uma baixada à mão, com a unit apontando para a segunda —
+# ou seja, `dnf update cloudflared` atualizava um binário que não era o que
+# estava rodando.
+ExecStart=/usr/bin/cloudflared --no-autoupdate tunnel --config /etc/cloudflared/config.yml run
+Restart=on-failure
+RestartSec=5s
+
+# O RPM cria o usuário cloudflared justamente para isto. Rodar como root era
+# privilégio gratuito num daemon que mantém túnel permanente para a internet.
+User=cloudflared
+Group=cloudflared
+
+# Endurecimento: o processo não precisa de nada além da própria config.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+ReadOnlyPaths=/etc/cloudflared
+
+[Install]
+WantedBy=multi-user.target

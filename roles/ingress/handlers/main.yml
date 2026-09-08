@@ -1,0 +1,19 @@
+---
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Reload nginx
+  ansible.builtin.service:
+    name: nginx
+    state: reloaded
+
+- name: Restart cloudflared
+  ansible.builtin.service:
+    name: cloudflared
+    state: restarted
+
+- name: Restart ttyd
+  ansible.builtin.service:
+    name: ttyd
+    state: restarted
