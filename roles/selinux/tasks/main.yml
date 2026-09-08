@@ -1,0 +1,133 @@
+---
+# =============================================================================
+# ROLE: selinux
+# -----------------------------------------------------------------------------
+# O QUE FAZ
+#   Ajusta os booleans do SELinux necessários para os containers e instala uma
+#   política customizada que permite ao ttyd abrir uma sessão de login.
+#
+# POR QUE ESTA ROLE EXISTE (e por que ela é o coração do projeto)
+#   SELinux é a diferença entre um homelab e um servidor. A saída fácil quando
+#   algo é bloqueado é `setenforce 0` ou `label:disable` — desligar. A saída
+#   correta é entender O QUE foi negado e conceder exatamente aquilo.
+#
+#   Este repositório faz as duas coisas, e a diferença entre elas está
+#   documentada de propósito:
+#     - ttyd     → política customizada de UMA linha (o jeito certo)
+#     - jellyfin → label:disable (dívida técnica assumida, ver README)
+#
+# CONCEITO PARA ESTUDAR AQUI: boolean vs política
+#   BOOLEAN é um interruptor que a política do sistema já prevê. Existe uma
+#   lista finita deles (`getsebool -a`) e ativar um é barato e reversível.
+#   POLÍTICA CUSTOMIZADA é uma regra nova que você escreve quando nenhum
+#   boolean cobre o caso. Mais trabalho, mas cirúrgica.
+#   Sempre procure um boolean primeiro.
+# =============================================================================
+
+- name: Estado atual do SELinux
+  ansible.builtin.debug:
+    msg: >-
+      SELinux: {{ ansible_selinux.status | default('desconhecido') }} /
+      modo: {{ ansible_selinux.mode | default('n/a') }} /
+      política: {{ ansible_selinux.type | default('n/a') }}
+  tags: [selinux, security]
+
+- name: Booleans de container aplicados
+  # ARMADILHA QUE O REPOSITÓRIO ANTIGO CAIU:
+  # ele aplicava `container_execmem`, que existia no EL8/EL9 e resolvia o
+  # SIGSEGV do JIT do .NET no Jellyfin. Esse boolean NÃO EXISTE MAIS na
+  # política 42.x do AlmaLinux 10 — a auditoria confirmou com
+  # `getsebool -a | grep container`.
+  #
+  # Aplicá-lo hoje faria a task falhar. A lição: booleans do SELinux são
+  # dependentes da versão da política, não são uma API estável. Sempre
+  # confirme no host antes de codificar.
+  ansible.posix.seboolean:
+    name: "{{ item.name }}"
+    state: "{{ item.state }}"
+    persistent: true      # persistent=true grava; sem isso, some no reboot
+  loop: "{{ selinux_container_booleans }}"
+  loop_control:
+    label: "{{ item.name }} = {{ item.state }}"
+  tags: [selinux, security]
+
+# -----------------------------------------------------------------------------
+# Política customizada do ttyd
+# -----------------------------------------------------------------------------
+# HISTÓRIA: esta política existia apenas como .te e .pp soltos no home do
+# usuário, criados à mão em agosto/2026 e nunca versionados. Se o host fosse
+# reinstalado, ela sumiria e ninguém lembraria por que o ttyd parou.
+#
+# É versionada como .te (código-fonte), não .pp (binário compilado), porque:
+#   - .te é legível e auditável: você vê exatamente qual permissão é concedida
+#   - .pp depende da versão da política do sistema e vira lixo silencioso
+#     depois de uma atualização
+# O playbook compila o .te no host, garantindo compatibilidade com a política
+# instalada naquele momento.
+# -----------------------------------------------------------------------------
+
+- name: Diretório de políticas SELinux locais
+  ansible.builtin.file:
+    path: /root/selinux
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+  tags: [selinux, security]
+
+- name: Código-fonte da política do ttyd enviado
+  ansible.builtin.copy:
+    src: ttyd_login_fix.te
+    dest: /root/selinux/ttyd_login_fix.te
+    owner: root
+    group: root
+    mode: '0600'
+  register: ttyd_policy_src
+  tags: [selinux, security]
+
+- name: Listar módulos SELinux já carregados
+  # CORREÇÃO (B1): mesmo motivo do blkid — é leitura pura e precisa rodar em
+  # --check, senão o `when` das próximas tasks quebra.
+  ansible.builtin.command: semodule -l
+  register: selinux_modules
+  changed_when: false
+  check_mode: false
+  tags: [selinux, security]
+
+- name: Política do ttyd compilada e empacotada
+  # Roda apenas se o fonte mudou OU o módulo ainda não está carregado.
+  # Sem essa condição, cada execução recompilaria e reportaria "changed",
+  # destruindo a capacidade de detectar mudança real.
+  #
+  # checkmodule    -> transforma .te (fonte) em .mod (objeto)
+  # semodule_package -> transforma .mod em .pp (pacote instalável)
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      cd /root/selinux
+      checkmodule -M -m -o ttyd_login_fix.mod ttyd_login_fix.te
+      semodule_package -o ttyd_login_fix.pp -m ttyd_login_fix.mod
+    executable: /bin/bash
+  when: >-
+    ttyd_policy_src.changed or
+    'ttyd_login_fix' not in (selinux_modules.stdout | default(''))
+  tags: [selinux, security]
+
+- name: Política do ttyd instalada no kernel
+  ansible.builtin.command: semodule -i /root/selinux/ttyd_login_fix.pp
+  when: >-
+    ttyd_policy_src.changed or
+    'ttyd_login_fix' not in (selinux_modules.stdout | default(''))
+  tags: [selinux, security]
+
+- name: Contexto SELinux correto em /etc/cloudflared
+  # A auditoria mostrou este diretório com contexto `etc_t` — o rótulo genérico
+  # que um `mkdir` manual deixa. Não quebra nada hoje, mas significa que a
+  # política não consegue distinguir esse diretório de qualquer outro em /etc.
+  # restorecon reaplica o contexto que a política define para o caminho.
+  ansible.builtin.command: restorecon -RF /etc/cloudflared
+  register: restorecon_result
+  changed_when: restorecon_result.stdout | default('') | length > 0
+  failed_when: false
+  check_mode: false
+  tags: [selinux, security]

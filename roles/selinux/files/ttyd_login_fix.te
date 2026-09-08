@@ -1,0 +1,25 @@
+# Recuperado de /home/ratto/ttyd_login_fix.te (host de produção, 02/08/2026).
+#
+# O QUE ESTA POLÍTICA FAZ
+# ----------------------------------------------------------------------------
+# O ttyd.service roda sob o domínio unconfined_service_t (é uma unit systemd
+# sem política própria). Ele executa /bin/login, que precisa transicionar para
+# unconfined_t para dar ao usuário uma sessão de shell normal.
+#
+# A policy targeted padrão não permite essa transição específica — o resultado
+# era o login falhar ao abrir o terminal pelo navegador. Esta regra concede
+# exatamente essa transição, e nada além dela.
+#
+# É deliberadamente estreita: uma única classe (process), uma única permissão
+# (transition), entre dois domínios nomeados. Compare com `label:disable`, que
+# desliga o SELinux inteiro para um container.
+module ttyd_login_fix 1.0;
+
+require {
+        type unconfined_t;
+        type unconfined_service_t;
+        class process transition;
+}
+
+#============= unconfined_service_t ==============
+allow unconfined_service_t unconfined_t:process transition;

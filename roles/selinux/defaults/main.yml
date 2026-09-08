@@ -1,0 +1,6 @@
+---
+# Booleans confirmados como existentes na policy 42.1.18 (AlmaLinux 10.2).
+# container_execmem foi REMOVIDO desta lista: não existe mais nesta versão.
+selinux_container_booleans:
+  - { name: container_use_dri_devices, state: true }   # Jellyfin / VAAPI
+  - { name: container_manage_cgroup,   state: true }   # Wings gerencia cgroups
