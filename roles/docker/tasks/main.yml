@@ -1,0 +1,52 @@
+---
+# =============================================================================
+# docker — engine + plugin compose.
+# =============================================================================
+
+# O repositório antigo usava o repo do CentOS via `dnf config-manager` num
+# `command`. Aqui é declarativo e aponta para o caminho correto do EL10.
+- name: Repositório do Docker CE presente
+  ansible.builtin.yum_repository:
+    name: docker-ce-stable
+    description: Docker CE Stable - $basearch
+    baseurl: https://download.docker.com/linux/centos/$releasever/$basearch/stable
+    gpgcheck: true
+    gpgkey: https://download.docker.com/linux/centos/gpg
+    enabled: true
+  tags: [docker]
+
+- name: Componentes do Docker instalados
+  ansible.builtin.dnf:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-compose-plugin
+      - docker-buildx-plugin
+    state: present
+  tags: [docker]
+
+- name: Docker ativo e habilitado
+  ansible.builtin.service:
+    name: docker
+    state: started
+    enabled: true
+  tags: [docker]
+
+# Estar no grupo docker equivale a root no host. Fica registrado aqui para
+# que a decisão seja visível, não implícita.
+- name: Usuário da aplicação no grupo docker
+  ansible.builtin.user:
+    name: "{{ app_user }}"
+    groups: docker
+    append: true
+  tags: [docker, users]
+
+- name: Diretório raiz das stacks
+  ansible.builtin.file:
+    path: "{{ app_home }}/docker"
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0750'
+  tags: [docker]
