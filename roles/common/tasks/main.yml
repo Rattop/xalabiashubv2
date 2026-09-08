@@ -1,0 +1,218 @@
+---
+# =============================================================================
+# ROLE: common
+# -----------------------------------------------------------------------------
+# O QUE FAZ
+#   Prepara a base do sistema operacional: repositórios de pacotes, ferramentas
+#   de linha de comando, o usuário que roda as aplicações, regras de sudo e
+#   endurecimento do SSH.
+#
+# POR QUE É A PRIMEIRA ROLE
+#   Todas as outras dependem dela. Não dá para criar diretórios de uma stack
+#   Docker antes do usuário dono desses diretórios existir.
+#
+# CONCEITO PARA ESTUDAR AQUI: idempotência
+#   Toda task abaixo pode rodar mil vezes e o resultado é o mesmo. Isso não é
+#   acidente — é escolha de módulo. `ansible.builtin.dnf` com state=present
+#   verifica antes de instalar; um `command: dnf install -y` faria o mesmo
+#   trabalho, mas reportaria "changed" toda vez e você perderia a capacidade
+#   de enxergar o que realmente mudou numa execução.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# BLOCO 1 — Pacotes
+# -----------------------------------------------------------------------------
+
+- name: Repositório EPEL habilitado
+  # EPEL (Extra Packages for Enterprise Linux) é o repositório comunitário que
+  # traz pacotes que a Red Hat não empacota: btop, fastfetch, ripgrep.
+  # Sem ele, metade da lista de common_packages não existe.
+  ansible.builtin.dnf:
+    name: epel-release
+    state: present
+  tags: [common, packages]
+
+- name: Ferramentas de sistema instaladas
+  # A lista fica em defaults/main.yml, não aqui. Motivo: quem lê a task quer
+  # saber O QUE ela faz; quem quer saber QUAIS pacotes abre o defaults.
+  # Separar as duas coisas é o que mantém a task legível quando a lista cresce.
+  ansible.builtin.dnf:
+    name: "{{ common_packages }}"
+    state: present
+  tags: [common, packages]
+
+- name: Fuso horário do sistema
+  # Importante além do óbvio: logs com timestamp errado tornam correlação de
+  # incidente quase impossível. O container do Pelican e o do Jellyfin também
+  # recebem TZ pelo compose, para que os três concordem.
+  community.general.timezone:
+    name: "{{ timezone }}"
+  tags: [common]
+
+# -----------------------------------------------------------------------------
+# BLOCO 2 — Usuário da aplicação
+# -----------------------------------------------------------------------------
+# O UID/GID são FIXADOS em 1000. Isso não é detalhe estético: os containers
+# rodam com `user: "1000:1000"` e escrevem em diretórios montados do host. Se
+# numa reinstalação o usuário nascesse com UID 1001, todos os arquivos de
+# configuração existentes ficariam inacessíveis para os containers.
+# -----------------------------------------------------------------------------
+
+- name: Grupo da aplicação
+  ansible.builtin.group:
+    name: "{{ app_group }}"
+    gid: "{{ app_gid }}"
+    state: present
+  tags: [common, users]
+
+- name: Usuário da aplicação
+  ansible.builtin.user:
+    name: "{{ app_user }}"
+    uid: "{{ app_uid }}"
+    group: "{{ app_group }}"
+    shell: /bin/bash
+    home: "{{ app_home }}"
+    create_home: true
+  tags: [common, users]
+
+# CORREÇÃO (B8): numa instalação nova o módulo `user` cria o home, mas não o
+# ~/.ssh. O módulo known_hosts mais abaixo falharia ao tentar escrever num
+# diretório inexistente. Criar explicitamente também garante o modo 0700, que
+# o OpenSSH exige — com permissão mais frouxa ele ignora as chaves em silêncio.
+- name: Diretório ~/.ssh com permissão correta
+  ansible.builtin.file:
+    path: "{{ app_home }}/.ssh"
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0700'
+  tags: [common, users, ssh]
+
+# -----------------------------------------------------------------------------
+# BLOCO 3 — Sudo
+# -----------------------------------------------------------------------------
+
+- name: Regra de sudo do usuário da aplicação
+  # DECISÃO CONSCIENTE: NOPASSWD:ALL é permissivo. Mantido porque o deploy.sh
+  # roda desatendido e não passa --ask-become-pass. O caminho "certo" seria
+  # separar um usuário `ansible` (sudo restrito por Cmnd_Alias) do usuário
+  # `ratto` (sem sudo, só no grupo docker). Isso é mudança de PROCESSO, não de
+  # sintaxe, e está registrada como dívida no README em vez de escondida aqui.
+  #
+  # O `validate` é o detalhe que importa: o visudo confere a sintaxe ANTES do
+  # arquivo entrar em vigor. Sem ele, um erro de digitação em sudoers deixa o
+  # sistema inteiro sem sudo — e sem sudo você não conserta o sudoers.
+  ansible.builtin.copy:
+    content: "{{ app_user }} ALL=(ALL) NOPASSWD:ALL\n"
+    dest: "/etc/sudoers.d/{{ app_user }}"
+    owner: root
+    group: root
+    mode: '0440'
+    validate: /usr/sbin/visudo -cf %s
+  tags: [common, users]
+
+- name: /usr/local/bin incluído no secure_path do sudo
+  # DIAGNÓSTICO REAL: o secure_path padrão do AlmaLinux é
+  #   /sbin:/bin:/usr/sbin:/usr/bin
+  # e NÃO inclui /usr/local/bin — onde vivem ttyd, playit e wings.
+  #
+  # Consequência prática: durante a auditoria, `sudo command -v ttyd` retornava
+  # "não encontrado" enquanto o serviço estava rodando normalmente. Eu quase
+  # concluí que os binários não existiam. Não existiam *no PATH do sudo*.
+  #
+  # Lição: quando uma ferramenta diz que algo não existe, confirme se ela está
+  # procurando no lugar certo antes de acreditar.
+  ansible.builtin.copy:
+    content: "Defaults secure_path = /sbin:/bin:/usr/sbin:/usr/bin:/usr/local/sbin:/usr/local/bin\n"
+    dest: /etc/sudoers.d/00-secure-path
+    owner: root
+    group: root
+    mode: '0440'
+    validate: /usr/sbin/visudo -cf %s
+  tags: [common, users]
+
+# -----------------------------------------------------------------------------
+# BLOCO 4 — Endurecimento do SSH
+# -----------------------------------------------------------------------------
+# ATENÇÃO — RISCO DE PERDER ACESSO:
+# Este bloco desativa autenticação por senha. Se a sua chave pública não
+# estiver em ~/.ssh/authorized_keys do host, a próxima conexão falha e a
+# recuperação só é possível pelo console físico ou do hypervisor.
+#
+# A verificação abaixo existe justamente para impedir isso.
+# -----------------------------------------------------------------------------
+
+- name: Verificar se existe chave pública autorizada
+  # CORREÇÃO (B6): antes de desativar senha, confirma que existe pelo menos
+  # uma chave. `stat` funciona em modo --check (é um módulo de leitura, não um
+  # `command`), então esta guarda também protege durante a simulação.
+  ansible.builtin.stat:
+    path: "{{ app_home }}/.ssh/authorized_keys"
+  register: authorized_keys_file
+  tags: [common, ssh, security]
+
+- name: Abortar se não houver chave — desativar senha trancaria você fora
+  ansible.builtin.fail:
+    msg: |
+      {{ app_home }}/.ssh/authorized_keys não existe ou está vazio.
+
+      Este playbook desativa PasswordAuthentication. Sem chave pública
+      instalada, você perde o acesso SSH a este host permanentemente.
+
+      Instale a chave antes de continuar:
+          ssh-copy-id {{ app_user }}@{{ ansible_host }}
+
+      Ou, para pular apenas o endurecimento do SSH nesta execução:
+          ansible-playbook playbooks/setup.yml --skip-tags ssh
+  when:
+    - not authorized_keys_file.stat.exists or authorized_keys_file.stat.size == 0
+  tags: [common, ssh, security]
+
+- name: Configuração de endurecimento do SSH
+  # Escrito como DROP-IN em sshd_config.d/, não no sshd_config principal.
+  #
+  # Por quê: quando o pacote openssh-server é atualizado, o RPM compara o
+  # arquivo principal com a versão nova. Se você editou, ele cria um .rpmnew
+  # ao lado e as duas configurações passam a divergir em silêncio. Drop-ins
+  # ficam fora desse conflito e sobrevivem a qualquer atualização.
+  #
+  # O `validate` roda `sshd -t` no arquivo antes de instalá-lo. Mesma lógica
+  # do visudo: config quebrada de SSH = host inacessível.
+  ansible.builtin.template:
+    src: sshd-hardening.conf.j2
+    dest: /etc/ssh/sshd_config.d/50-xalabiashub.conf
+    owner: root
+    group: root
+    mode: '0600'
+    validate: /usr/sbin/sshd -t -f %s
+  notify: Reload SSH
+  tags: [common, ssh, security]
+
+# -----------------------------------------------------------------------------
+# BLOCO 5 — Confiança no GitHub
+# -----------------------------------------------------------------------------
+
+- name: Chave de host do GitHub fixada
+  # SUBSTITUI o `accept_hostkey: true` do repositório antigo.
+  #
+  # accept_hostkey aceita CEGAMENTE a chave apresentada na primeira conexão
+  # (o modelo "TOFU" — Trust On First Use). Se alguém estiver no meio do
+  # caminho naquele exato momento, você grava a chave do atacante como
+  # legítima e nunca mais é avisado.
+  #
+  # Aqui a chave é declarada. Se o GitHub apresentar outra, o git falha — que
+  # é o comportamento desejado.
+  #
+  # MANUTENÇÃO: o GitHub rotacionou a chave RSA em março/2023 após um
+  # vazamento. Se um dia o git parar de clonar com erro de host key, confira
+  # a chave atual em https://api.github.com/meta e atualize defaults/main.yml.
+  ansible.builtin.known_hosts:
+    name: github.com
+    key: "github.com {{ item }}"
+    path: "{{ app_home }}/.ssh/known_hosts"
+    state: present
+  become_user: "{{ app_user }}"
+  loop: "{{ github_host_keys }}"
+  loop_control:
+    label: "{{ item.split(' ')[0] }}"
+  tags: [common, ssh, security]

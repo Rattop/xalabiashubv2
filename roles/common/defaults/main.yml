@@ -1,0 +1,45 @@
+---
+# =============================================================================
+# Valores padrão da role common.
+#
+# defaults/ vs group_vars/: o que está aqui é detalhe interno da role e
+# raramente muda. O que está em group_vars/all/main.yml é a configuração do
+# SEU ambiente. Se você precisa editar um defaults com frequência, ele
+# provavelmente deveria estar em group_vars.
+# =============================================================================
+
+common_packages:
+  # --- Uso diário ---
+  - git
+  - curl
+  - wget
+  - tar
+  - rsync
+  - vim-enhanced
+  - jq                              # processar JSON no shell (docker inspect)
+
+  # --- Observação do sistema ---
+  - htop
+  - btop
+  - fastfetch
+  - smartmontools                   # sem ele não há como checar saúde do disco
+
+  # --- Busca (usados pelo autor no dia a dia) ---
+  - ripgrep
+  - fd-find
+
+  # --- Requisitos dos módulos Ansible ---------------------------------------
+  # Estes NÃO são preferência pessoal: sem eles, tasks deste repositório falham.
+  - policycoreutils-python-utils    # fornece semanage/semodule
+  - python3-libsemanage             # exigido pelo módulo ansible.posix.seboolean
+  - checkpolicy                     # compila a política .te do ttyd
+  # CORREÇÃO (B7): era dnf-utils, que é um metapacote legado do EL7/8 e pode
+  # não existir no EL10. O comando needs-restarting vem do dnf-plugins-core, e
+  # no EL10 é invocado como subcomando: `dnf needs-restarting -r`.
+  - dnf-plugins-core
+
+# Chave pública de host do github.com.
+# Fonte oficial: https://api.github.com/meta (campo ssh_keys)
+# Confira antes de confiar — não copie de tutorial aleatório.
+github_host_keys:
+  - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"

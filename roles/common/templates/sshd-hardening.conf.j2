@@ -1,0 +1,21 @@
+# {{ ansible_managed }}
+# Gerenciado por XalabiasHub. Edições manuais são sobrescritas.
+
+# Sem login direto de root: obriga a passar pelo usuário nomeado, o que
+# preserva rastro de auditoria de quem escalou e quando.
+PermitRootLogin no
+
+# Só chave. O host tem ttyd exposto via túnel; senha em SSH seria a segunda
+# porta de entrada por adivinhação.
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+
+# Encerra sessões penduradas (2 x 300s). Sessões órfãs de ttyd/tmux ficavam
+# semanas abertas no `last` da auditoria.
+ClientAliveInterval 300
+ClientAliveCountMax 2
+
+MaxAuthTries 3
+X11Forwarding no
+AllowAgentForwarding no
