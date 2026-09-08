@@ -1,0 +1,56 @@
+---
+# =============================================================================
+# firewall — codifica o firewalld que hoje existe SÓ no host.
+#
+# A auditoria revelou uma camada inteira de firewall configurada à mão, fora
+# do controle de versão. Reinstalar sem isto deixaria o host sem firewall
+# nenhum — o oposto do estado atual.
+#
+# O conjunto abaixo reproduz exatamente a zona public auditada. Portas de
+# container não aparecem: o Docker cria e gerencia a zona "docker" sozinho.
+# Portas de host (80, 7681, 8096) continuam FECHADAS para a LAN — elas só são
+# acessíveis pelo cloudflared, que conecta de localhost. Isso é intencional e
+# é o que faz o Cloudflare Access ser a porta de entrada real.
+# =============================================================================
+
+- name: firewalld instalado
+  ansible.builtin.dnf:
+    name: firewalld
+    state: present
+  tags: [firewall, security]
+
+- name: firewalld ativo e habilitado
+  ansible.builtin.service:
+    name: firewalld
+    state: started
+    enabled: true
+  tags: [firewall, security]
+
+- name: Serviços liberados na zona {{ firewall_zone }}
+  ansible.posix.firewalld:
+    service: "{{ item }}"
+    zone: "{{ firewall_zone }}"
+    permanent: true
+    immediate: true
+    state: enabled
+  loop: "{{ firewall_public_services }}"
+  tags: [firewall, security]
+
+- name: Portas liberadas na zona {{ firewall_zone }}
+  ansible.posix.firewalld:
+    port: "{{ item }}"
+    zone: "{{ firewall_zone }}"
+    permanent: true
+    immediate: true
+    state: enabled
+  loop: "{{ firewall_public_ports }}"
+  tags: [firewall, security]
+
+- name: Interface principal associada à zona {{ firewall_zone }}
+  ansible.posix.firewalld:
+    interface: "{{ ansible_default_ipv4.interface }}"
+    zone: "{{ firewall_zone }}"
+    permanent: true
+    immediate: true
+    state: enabled
+  tags: [firewall, security]
