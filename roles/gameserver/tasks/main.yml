@@ -84,12 +84,24 @@
   #
   # `backup: true` guarda uma cópia datada antes de qualquer sobrescrita —
   # a rede de segurança para o caso de o template divergir no futuro.
+  #
+  # BUG REAL, encontrado testando num host verdadeiramente limpo:
+  #
+  #   O modo era 0640 dono {{ app_user }}. Mas o processo Caddy DENTRO do
+  #   container roda como www-data (uid 82), que não é o dono nem está no
+  #   grupo — então não conseguia LER o próprio Caddyfile montado. O
+  #   supervisord do container reportava "caddy FATAL Exited too quickly",
+  #   nada escutava na porta 80 do container, e o nginx do host devolvia 502.
+  #
+  #   0644: o Caddyfile é config de servidor web, não tem segredo nenhum
+  #   (comparar com nginx.conf e os .conf de site, todos 0644). Precisa ser
+  #   legível por qualquer uid porque o uid do container não é previsível.
   ansible.builtin.template:
     src: Caddyfile.j2
     dest: "{{ app_home }}/docker/pelican-panel/Caddyfile"
     owner: "{{ app_user }}"
     group: "{{ app_group }}"
-    mode: '0640'
+    mode: '0644'
     backup: true      # guarda uma cópia datada antes de sobrescrever
   when: pelican_manage_caddyfile | bool
   tags: [gameserver, pelican]
