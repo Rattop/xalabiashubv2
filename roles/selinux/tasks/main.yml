@@ -52,18 +52,29 @@
   tags: [selinux, security]
 
 # -----------------------------------------------------------------------------
-# Política customizada do ttyd
+# Políticas SELinux locais (.te compilado no host)
 # -----------------------------------------------------------------------------
-# HISTÓRIA: esta política existia apenas como .te e .pp soltos no home do
-# usuário, criados à mão em agosto/2026 e nunca versionados. Se o host fosse
-# reinstalado, ela sumiria e ninguém lembraria por que o ttyd parou.
+# HISTÓRIA: a primeira dessas políticas (ttyd_login_fix) existia só como .te
+# e .pp soltos no home do usuário, criados à mão em agosto/2026 e nunca
+# versionados. Se o host fosse reinstalado, sumiria e ninguém lembraria por
+# que o ttyd tinha parado.
 #
-# É versionada como .te (código-fonte), não .pp (binário compilado), porque:
+# São versionadas como .te (código-fonte), não .pp (binário compilado):
 #   - .te é legível e auditável: você vê exatamente qual permissão é concedida
 #   - .pp depende da versão da política do sistema e vira lixo silencioso
 #     depois de uma atualização
-# O playbook compila o .te no host, garantindo compatibilidade com a política
-# instalada naquele momento.
+# O playbook compila cada .te no host, garantindo compatibilidade com a
+# política instalada naquele momento.
+#
+# A LISTA de módulos está em defaults/main.yml (selinux_local_policies). Cada
+# nome corresponde a um arquivo files/<nome>.te — o QUE cada política concede
+# e POR QUÊ está no cabeçalho do próprio .te, não aqui.
+#
+# BUG REAL, encontrado testando num host verdadeiramente limpo: a segunda
+# política (nginx_pelican_connect) nasceu porque o nginx respondia 502 no
+# painel — httpd_t não podia conectar em 127.0.0.1:8081 (transproxy_port_t).
+# Em produção o boolean httpd_can_network_connect tinha sido ligado à mão.
+# A correção concede só a conexão de proxy, em vez de ligar o boolean amplo.
 # -----------------------------------------------------------------------------
 
 - name: Diretório de políticas SELinux locais
@@ -75,14 +86,15 @@
     mode: '0700'
   tags: [selinux, security]
 
-- name: Código-fonte da política do ttyd enviado
+- name: Código-fonte das políticas SELinux locais enviado
   ansible.builtin.copy:
-    src: ttyd_login_fix.te
-    dest: /root/selinux/ttyd_login_fix.te
+    src: "{{ item }}.te"
+    dest: "/root/selinux/{{ item }}.te"
     owner: root
     group: root
     mode: '0600'
-  register: ttyd_policy_src
+  loop: "{{ selinux_local_policies }}"
+  register: selinux_policy_src
   tags: [selinux, security]
 
 - name: Listar módulos SELinux já carregados
@@ -94,30 +106,31 @@
   check_mode: false
   tags: [selinux, security]
 
-- name: Política do ttyd compilada e empacotada
-  # Roda apenas se o fonte mudou OU o módulo ainda não está carregado.
+- name: Políticas SELinux locais compiladas e instaladas
+  # Roda para um módulo só se o fonte mudou OU ele ainda não está carregado.
   # Sem essa condição, cada execução recompilaria e reportaria "changed",
   # destruindo a capacidade de detectar mudança real.
   #
-  # checkmodule    -> transforma .te (fonte) em .mod (objeto)
-  # semodule_package -> transforma .mod em .pp (pacote instalável)
+  #   checkmodule      -> .te (fonte) -> .mod (objeto)
+  #   semodule_package -> .mod        -> .pp  (pacote instalável)
+  #   semodule -i      -> instala o .pp na política do kernel
+  #
+  # Compilar e instalar ficam na MESMA task porque a guarda (`when`) é
+  # idêntica para as duas — compilar sem instalar não teria sentido.
   ansible.builtin.shell:
     cmd: |
       set -euo pipefail
       cd /root/selinux
-      checkmodule -M -m -o ttyd_login_fix.mod ttyd_login_fix.te
-      semodule_package -o ttyd_login_fix.pp -m ttyd_login_fix.mod
+      checkmodule -M -m -o {{ item.item }}.mod {{ item.item }}.te
+      semodule_package -o {{ item.item }}.pp -m {{ item.item }}.mod
+      semodule -i {{ item.item }}.pp
     executable: /bin/bash
+  loop: "{{ selinux_policy_src.results }}"
+  loop_control:
+    label: "{{ item.item }}"
   when: >-
-    ttyd_policy_src.changed or
-    'ttyd_login_fix' not in (selinux_modules.stdout | default(''))
-  tags: [selinux, security]
-
-- name: Política do ttyd instalada no kernel
-  ansible.builtin.command: semodule -i /root/selinux/ttyd_login_fix.pp
-  when: >-
-    ttyd_policy_src.changed or
-    'ttyd_login_fix' not in (selinux_modules.stdout | default(''))
+    item.changed or
+    item.item not in (selinux_modules.stdout | default(''))
   tags: [selinux, security]
 
 - name: Contexto SELinux correto em /etc/cloudflared

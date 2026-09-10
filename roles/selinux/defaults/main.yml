@@ -4,3 +4,9 @@
 selinux_container_booleans:
   - { name: container_use_dri_devices, state: true }   # Jellyfin / VAAPI
   - { name: container_manage_cgroup,   state: true }   # Wings gerencia cgroups
+
+# Políticas SELinux locais compiladas no host. Cada nome = roles/selinux/
+# files/<nome>.te. O QUE e o PORQUÊ de cada uma estão no cabeçalho do .te.
+selinux_local_policies:
+  - ttyd_login_fix         # transição de processo para o /bin/login do ttyd
+  - nginx_pelican_connect  # nginx -> conexão de proxy para o container do painel

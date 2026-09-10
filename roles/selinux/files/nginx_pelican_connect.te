@@ -1,0 +1,28 @@
+module nginx_pelican_connect 1.0;
+
+# O QUE ESTA POLÍTICA FAZ
+# ----------------------------------------------------------------------------
+# O nginx do host (domínio httpd_t) faz proxy reverso para o container do
+# Pelican Panel, publicado em 127.0.0.1:8081. Na policy targeted a porta 8081
+# carrega o tipo transproxy_port_t, e httpd_t NÃO tem permissão de abrir
+# conexão para esse tipo por padrão.
+#
+# O sintoma era o nginx responder 502 em painel.<domínio> com
+# "connect() to 127.0.0.1:8081 failed (13: Permission denied)" no
+# error.log. Em produção não aparecia porque o boolean
+# httpd_can_network_connect tinha sido ligado à mão na configuração
+# original, antes de existir playbook.
+#
+# A saída FÁCIL seria `setsebool -P httpd_can_network_connect on` — mas isso
+# libera o nginx para conectar em QUALQUER host e porta. Esta regra concede
+# exatamente uma coisa: conectar em portas transproxy_port_t. Mesma lógica
+# da política do ttyd: conceder o que foi negado, não desligar a proteção.
+
+require {
+        type httpd_t;
+        type transproxy_port_t;
+        class tcp_socket name_connect;
+}
+
+#============= httpd_t ==============
+allow httpd_t transproxy_port_t:tcp_socket name_connect;
