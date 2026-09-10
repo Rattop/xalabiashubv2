@@ -15,7 +15,18 @@ services:
   # Aplicação (Laravel + PHP-FPM + Caddy interno)
   # ---------------------------------------------------------------------------
   pelican:
-    image: ghcr.io/pelican-dev/panel:latest
+    # BUG REAL, encontrado testando num host verdadeiramente limpo:
+    #
+    #   A imagem estava como ghcr.io/pelican-dev/panel:latest e o
+    #   `docker compose up` falhava com "error from registry: denied" — esse
+    #   pacote não existe (nem público) nesse caminho. O repositório no GitHub
+    #   é pelican-dev/panel, mas a imagem é publicada em ghcr.io/pelican/panel
+    #   (é o que o compose.yml oficial do Pelican usa no branch main).
+    #
+    #   Em produção não aparecia porque o container já rodava com uma imagem
+    #   baixada há muito tempo, e `compose up` não re-baixa uma :latest que já
+    #   está em cache. Só um host sem a imagem em cache revela o caminho morto.
+    image: ghcr.io/pelican/panel:latest
     container_name: pelican-panel-pelican-1
     restart: always
 
