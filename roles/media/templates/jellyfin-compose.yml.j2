@@ -50,9 +50,16 @@ services:
       - "{{ jellyfin_video_gid }}"    # grupo video  — /dev/dri/card0
 {% endif %}
 
+    # Cada device é mapeado só se a role confirmou que ele EXISTE no host
+    # (stat, não nome de grupo). Mapear um /dev/dri inexistente faz o
+    # container falhar no start — ver comentário na task da role media.
     devices:
+{% if jellyfin_render_gid %}
       - /dev/dri/renderD128:/dev/dri/renderD128   # aceleração VAAPI
+{% endif %}
+{% if jellyfin_video_gid %}
       - /dev/dri/card0:/dev/dri/card0
+{% endif %}
 {% endif %}
 
     volumes:

@@ -42,13 +42,44 @@
   check_mode: false
   tags: [media, jellyfin]
 
+# BUG REAL, encontrado testando num host verdadeiramente limpo:
+#
+#   A decisão de mapear /dev/dri no compose olhava só se o GRUPO render/video
+#   existe. Mas grupo não é dispositivo: uma VM KVM sem GPU MESMO ASSIM tem
+#   os grupos render (105) e video (39) — o systemd os cria por padrão. O
+#   resultado era o container do Jellyfin falhar no start com
+#   "error gathering device information ... /dev/dri/renderD128: no such
+#   file or directory".
+#
+#   `stat` é módulo de leitura e roda em --check (ao contrário de um
+#   `command: test -e`), então não precisa de check_mode: false.
+- name: Verificar se o dispositivo de render (VAAPI) existe
+  ansible.builtin.stat:
+    path: /dev/dri/renderD128
+  register: dev_renderd128
+  tags: [media, jellyfin]
+
+- name: Verificar se o dispositivo de vídeo (card0) existe
+  ansible.builtin.stat:
+    path: /dev/dri/card0
+  register: dev_card0
+  tags: [media, jellyfin]
+
 - name: Registrar GIDs de vídeo para uso no compose
-  # `getent group render` devolve algo como "render:x:105:".
-  # Dividimos por ":" e pegamos o terceiro campo (índice 2) = o GID.
-  # O `default` protege contra um host sem esses grupos (uma VM sem GPU).
+  # `getent group render` devolve algo como "render:x:105:": split por ":" e
+  # terceiro campo (índice 2) = o GID.
+  #
+  # O GID só é registrado quando o grupo existe E o dispositivo correspondente
+  # existe no host. Sem o dispositivo, o fact fica vazio, o compose não mapeia
+  # o device nem adiciona o grupo, e o Jellyfin cai para transcodificação por
+  # CPU — em vez de nem subir.
   ansible.builtin.set_fact:
-    jellyfin_render_gid: "{{ (render_group.stdout | default('')).split(':')[2] | default('', true) }}"
-    jellyfin_video_gid: "{{ (video_group.stdout | default('')).split(':')[2] | default('', true) }}"
+    jellyfin_render_gid: >-
+      {{ (render_group.stdout | default('')).split(':')[2] | default('', true)
+         if dev_renderd128.stat.exists | default(false) else '' }}
+    jellyfin_video_gid: >-
+      {{ (video_group.stdout | default('')).split(':')[2] | default('', true)
+         if dev_card0.stat.exists | default(false) else '' }}
   tags: [media, jellyfin]
 
 - name: Mostrar GIDs detectados
@@ -58,7 +89,8 @@
       video: {{ jellyfin_video_gid | default('ausente') }}.
       {{ 'Transcodificação por hardware disponível.'
          if jellyfin_render_gid else
-         'Sem grupo render: o Jellyfin usará transcodificação por software (CPU).' }}
+         'Sem GPU utilizável (grupo ou /dev/dri ausente): o Jellyfin usará
+          transcodificação por software (CPU).' }}
   tags: [media, jellyfin]
 
 - name: Diretórios das stacks de mídia
