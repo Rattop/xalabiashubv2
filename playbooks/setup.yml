@@ -242,7 +242,12 @@
           - "Convergência concluída em {{ inventory_hostname }}."
           - ""
           - "Próximos passos:"
-          - "  1. ansible-playbook playbooks/services.yml --limit {{ ansible_play_hosts_all | length > 1 | ternary('<grupo>', inventory_hostname) }}"
+          # Parênteses OBRIGATÓRIOS: em Jinja o filtro `|` liga mais forte que
+          # a comparação `>`. Sem eles isto virava
+          #   (hosts|length) > (1|ternary('<grupo>', inventory_hostname))
+          # — ou seja, `1|ternary(...)` resolvia para a string '<grupo>' e o
+          # `int > str` estourava "'>' not supported between int and str".
+          - "  1. ansible-playbook playbooks/services.yml --limit {{ (ansible_play_hosts_all | length > 1) | ternary('<grupo>', inventory_hostname) }}"
           - "  2. ansible-playbook playbooks/diag.yml"
           - "  3. Rode este playbook de novo — deve dar changed=0."
       tags: [always]
