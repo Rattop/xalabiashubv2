@@ -1,0 +1,26 @@
+---
+# =============================================================================
+# Sobreposições de variável — SOMENTE para hosts do grupo [lab].
+#
+# COMO O ANSIBLE ESCOLHE QUAL VALOR USAR (precedência de variáveis)
+#   group_vars/all/main.yml    -> vale para TODO host do inventário
+#   group_vars/lab/main.yml    -> vale só para hosts do grupo [lab]; quando
+#                                  existe um valor aqui E em all/, o daqui
+#                                  GANHA para esses hosts
+#
+#   Isso permite descrever a verdade de produção uma vez só (em all/) e
+#   documentar as exceções do laboratório aqui, num lugar visível, em vez de
+#   espalhar `if inventory_hostname == "lab"` pelas roles.
+# =============================================================================
+
+# Em produção, 'ratto' é uid/gid 1000. Nesta VM de laboratório, esse número
+# já pertence ao usuário 'vagrant' criado pela imagem cloud do AlmaLinux, e
+# não é seguro renumerá-lo em tempo de provisionamento (ver Vagrantfile,
+# comentário do provisionador "bootstrap-ratto", para a explicação técnica
+# completa de por quê).
+#
+# 1001 é só um número livre nesta VM — não tem significado nenhum além
+# disso. O que importa de verdade (mesmo SO, mesmos pacotes, mesmo
+# playbook, mesmas regras de firewall) continua idêntico ao de produção.
+app_uid: 1001
+app_gid: 1001
