@@ -115,8 +115,31 @@
   # de root e o dnf não reclama.
   #
   # Importar a chave é o que torna a verificação possível.
+  #
+  # BUG REAL, encontrado testando num host verdadeiramente limpo:
+  #
+  #   A URL usada aqui era cloudflare-main.gpg — e o rpm_key falhava com
+  #   "Not a public key". Esse arquivo é a chave OpenPGP em formato BINÁRIO
+  #   (é o que as instruções Debian da Cloudflare mandam salvar direto em
+  #   /usr/share/keyrings/). O `rpm --import`, e portanto o módulo rpm_key,
+  #   só aceitam chave ASCII-armored ("-----BEGIN PGP PUBLIC KEY BLOCK-----").
+  #
+  #   A Cloudflare publica a MESMA chave em formato armored numa outra URL —
+  #   cloudflare-ascii-pubkey.gpg — e é essa que o cloudflared.repo oficial
+  #   deles referencia no gpgkey=. Era a URL errada desde o início; só nunca
+  #   apareceu porque em produção o cloudflared foi configurado à mão antes
+  #   de existir playbook.
+  #
+  #   fingerprint: trava a identidade da chave. Sem isso o rpm_key importa
+  #   o que a URL devolver naquele momento; com isso, uma chave trocada por
+  #   um atacante (ou pela própria Cloudflare sem aviso) faz a task FALHAR
+  #   em vez de confiar cega. Mesma lógica da chave de host do GitHub fixada
+  #   na role common. Fonte da fingerprint: a própria chave publicada em
+  #   pkg.cloudflare.com, conferida em 09/2026 (CloudFlare Software
+  #   Packaging 2025 <help@cloudflare.com>).
   ansible.builtin.rpm_key:
-    key: https://pkg.cloudflare.com/cloudflare-main.gpg
+    key: https://pkg.cloudflare.com/cloudflare-ascii-pubkey.gpg
+    fingerprint: CC94 B39C 77AE 7342 A68B 8962 8A68 2D30 8D4E 5E73
     state: present
   tags: [ingress, cloudflared]
 
@@ -126,7 +149,9 @@
     description: cloudflared stable
     baseurl: https://pkg.cloudflare.com/cloudflared/rpm
     gpgcheck: true
-    gpgkey: https://pkg.cloudflare.com/cloudflare-main.gpg
+    # Mesma chave armored da task acima — é a URL que o cloudflared.repo
+    # oficial da Cloudflare usa.
+    gpgkey: https://pkg.cloudflare.com/cloudflare-ascii-pubkey.gpg
     enabled: true
   tags: [ingress, cloudflared]
 
