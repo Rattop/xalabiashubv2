@@ -178,12 +178,48 @@
     state: absent
   tags: [ingress, cloudflared]
 
+# BUG REAL, encontrado testando num host verdadeiramente limpo:
+#
+#   As tasks abaixo e a unit systemd (cloudflared.service.j2) assumem que
+#   existe um usuário/grupo de sistema `cloudflared` — a unit roda com
+#   User=cloudflared, e o diretório de config é 0750 root:cloudflared para
+#   o daemon LER sem poder escrever.
+#
+#   O comentário antigo dizia "o RPM cria esse usuário". NÃO CRIA. O pacote
+#   cloudflared do repo oficial entrega só /usr/bin/cloudflared e a man page
+#   (`rpm -ql cloudflared` confirma) — sem unit, sem sysusers.d, sem usuário.
+#   Em produção o usuário existia porque foi criado à mão no setup original,
+#   antes de qualquer playbook. Num host limpo, a task do diretório falhava
+#   com "failed to look up group cloudflared".
+#
+#   Criar o usuário é responsabilidade do playbook, então é o playbook que
+#   cria — explicitamente, como serviço de sistema sem shell nem login.
+- name: Grupo de sistema do cloudflared
+  ansible.builtin.group:
+    name: cloudflared
+    system: true
+  tags: [ingress, cloudflared]
+
+- name: Usuário de sistema do cloudflared
+  # system: true  -> UID na faixa de serviço, não conta de pessoa
+  # shell nologin + create_home: false -> não é uma conta para logar
+  # home em /etc/cloudflared -> onde ele lê a config; não há dados em ~
+  ansible.builtin.user:
+    name: cloudflared
+    group: cloudflared
+    system: true
+    shell: /sbin/nologin
+    home: /etc/cloudflared
+    create_home: false
+    comment: Cloudflare Tunnel daemon
+  tags: [ingress, cloudflared]
+
 - name: Diretório de configuração do cloudflared
   # CORREÇÃO (B2) — BUG QUE DERRUBARIA O TÚNEL:
   # a unit systemd deste projeto roda o cloudflared como usuário `cloudflared`
-  # (o RPM cria esse usuário justamente para isso). Mas na primeira versão eu
-  # deixei o diretório 0700 root:root — o processo não conseguiria LER a
-  # própria configuração e o serviço morreria no start.
+  # (criado logo acima). Mas na primeira versão eu deixei o diretório
+  # 0700 root:root — o processo não conseguiria LER a própria configuração e
+  # o serviço morreria no start.
   #
   # Solução: dono root (só root escreve), grupo cloudflared (o serviço lê).
   # Modo 0750 no diretório e 0640 nos arquivos.

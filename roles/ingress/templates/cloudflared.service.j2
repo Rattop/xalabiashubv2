@@ -14,8 +14,9 @@ ExecStart=/usr/bin/cloudflared --no-autoupdate tunnel --config /etc/cloudflared/
 Restart=on-failure
 RestartSec=5s
 
-# O RPM cria o usuário cloudflared justamente para isto. Rodar como root era
-# privilégio gratuito num daemon que mantém túnel permanente para a internet.
+# Usuário de sistema criado pela role ingress (o RPM do cloudflared NÃO o
+# cria — só entrega o binário). Rodar como root era privilégio gratuito num
+# daemon que mantém túnel permanente para a internet.
 User=cloudflared
 Group=cloudflared
 
