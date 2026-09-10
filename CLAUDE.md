@@ -129,6 +129,45 @@ Regras de uso:
   exceto para tasks explicitamente não-idempotentes por natureza (e
   essas precisam estar comentadas dizendo por quê).
 
+### Rodar o playbook contra o laboratório sem editar `inventory.ini`
+
+O `inventory.ini` é local e não se toca (ver "Nunca fazer"). Quando a VM
+é recriada e ganha IP DHCP novo, pegue o IP com `vagrant ssh-config` e
+passe-o na linha de comando em vez de editar o arquivo:
+
+```bash
+ansible-playbook playbooks/setup.yml --limit lab \
+  -e ansible_host=<ip-atual> --ask-vault-pass
+```
+
+`--limit lab` mantém o `group_vars/lab/` aplicado; `-e ansible_host=`
+só sobrescreve o endereço de conexão.
+
+### Estado da validação no laboratório (revisar antes de assumir)
+
+Numa VM recriada do zero, o `setup.yml` converge e é idempotente de ponta
+a ponta (`changed=0` na segunda passada), **exceto o túnel do
+cloudflared** — ver abaixo. O `services.yml` sobe as seis stacks e os
+serviços nativos; o `wings` é o único que não fica de pé sozinho, porque
+depende de um `config.yml` que o Pelican Panel só gera depois que um node
+é criado pela interface. Isso é limitação de um laboratório sem jogo
+configurado, não bug de playbook.
+
+### Pendência: túnel próprio do laboratório (ainda não implementado)
+
+O `ingress` aborta no laboratório em "credencial do túnel não existe":
+`/etc/cloudflared/<uuid>.json` é segredo emitido pela Cloudflare e não
+está na VM. **Decisão tomada:** o laboratório usa um túnel SEPARADO
+(`xalabias-lab`), não o de produção — dois conectores no mesmo túnel
+fazem a Cloudflare dividir o tráfego de produção com a VM. Falta:
+
+1. `cloudflared tunnel login` + `cloudflared tunnel create xalabias-lab`
+   na VM, e copiar a credencial para `/etc/cloudflared/<uuid>.json`.
+2. Sobrescrever `cloudflare_tunnel_id` e `cloudflare_tunnel_name` em
+   `group_vars/lab/main.yml` com os valores do túnel de laboratório.
+
+Até isso existir, valide o resto com `--skip-tags cloudflared`.
+
 ## Como investigar um erro (método obrigatório, não sugestão)
 
 Este projeto foi construído inteiro com esse método, e ele já pagou o
