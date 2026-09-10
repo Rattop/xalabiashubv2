@@ -118,19 +118,42 @@
   #
   #   common     -> usuário e pacotes; tudo depende disso
   #   storage    -> monta o disco antes que alguém tente escrever nele
-  #   selinux    -> booleans antes dos containers subirem
+  #   docker     -> instala o engine ANTES do selinux, de propósito (ver nota)
+  #   selinux    -> booleans de container, só possíveis depois do docker
   #   firewall   -> regras antes dos serviços começarem a escutar
-  #   docker     -> engine antes das stacks
   #   ingress    -> camada de entrada
   #   media      -> stacks de mídia
   #   gameserver -> stacks e daemons de jogo
+  #
+  # NOTA SOBRE docker vir antes de selinux — bug real, encontrado testando
+  # num host verdadeiramente limpo:
+  #
+  #   Os booleans container_use_dri_devices e container_manage_cgroup não
+  #   fazem parte da política padrão do SELinux. Eles são DEFINIDOS pelo
+  #   pacote container-selinux, que só entra no sistema como dependência do
+  #   docker-ce. Rodar `seboolean` para eles antes do Docker existir falha
+  #   com "is not defined in persistent policy" — a política simplesmente
+  #   ainda não conhece esses nomes.
+  #
+  #   A versão anterior desta ordem (selinux antes de docker) funcionava em
+  #   produção só porque o Docker já estava instalado há meses quando os
+  #   playbooks passaram a existir — a ordem errada ficava escondida atrás
+  #   de um sistema que já tinha o que faltava. Um host novo de verdade (like
+  #   este laboratório) expõe o problema na hora.
+  #
+  #   Lição: "booleans antes dos containers SUBIREM" (verdadeiro) é diferente
+  #   de "booleans antes do Docker ser INSTALADO" (o que eu tinha escrito
+  #   antes, e estava errado). O boolean precisa estar ativo antes do
+  #   CONTAINER iniciar — não antes do pacote do Docker entrar no sistema.
+  #   As roles media/gameserver, que de fato sobem containers, continuam
+  #   rodando depois do selinux — a garantia original permanece válida.
   # ---------------------------------------------------------------------------
   roles:
     - { role: common,     tags: [common] }
     - { role: storage,    tags: [storage] }
+    - { role: docker,     tags: [docker] }
     - { role: selinux,    tags: [selinux] }
     - { role: firewall,   tags: [firewall] }
-    - { role: docker,     tags: [docker] }
     - { role: ingress,    tags: [ingress] }
     - { role: media,      tags: [media] }
     - { role: gameserver, tags: [gameserver] }
