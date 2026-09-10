@@ -26,6 +26,51 @@
     state: present
   tags: [docker]
 
+# BUG REAL, encontrado testando num host verdadeiramente limpo:
+#
+#   dockerd falhava ao iniciar com "Extension addrtype revision 0 not
+#   supported, missing kernel module?" — o iptables usa o módulo de kernel
+#   xt_addrtype para decidir quais pacotes são destinados ao próprio host
+#   (--dst-type LOCAL), e é peça obrigatória de como o Docker monta a rede
+#   bridge.
+#
+#   O pacote que fornece esse módulo (kernel-modules-extra) NÃO é
+#   dependência do docker-ce — imagens mínimas de servidor, como a cloud do
+#   AlmaLinux usada no laboratório, não o instalam por padrão, já que ele
+#   carrega dezenas de extensões de netfilter que a maioria dos hosts nunca
+#   usa.
+#
+#   Em produção isso nunca apareceu porque o pacote já estava instalado
+#   desde a configuração manual original do servidor, muito antes de existir
+#   qualquer playbook — uma dependência oculta que só um host realmente novo
+#   revela.
+- name: Módulos de kernel extra instalados (netfilter — obrigatório para o Docker)
+  # CORREÇÃO — segundo bug real encontrado neste mesmo teste:
+  #
+  #   Pedir "kernel-modules-extra" sem versão faz o dnf resolver para o
+  #   pacote que casa com o kernel MAIS RECENTE disponível no repositório —
+  #   não necessariamente o que está de fato em execução no host. Numa VM
+  #   que nunca reiniciou desde a criação (ou em qualquer host de produção
+  #   que recebeu `dnf update` sem reboot ainda, cenário extremamente comum),
+  #   os dois podem divergir. O resultado: os módulos instalados não existem
+  #   no diretório do kernel realmente ativo, e o modprobe falha.
+  #
+  #   ansible_kernel é o fato equivalente a `uname -r` — a versão que está
+  #   RODANDO agora, não a mais nova instalada. Fixar nele garante que o
+  #   pacote de módulos sempre corresponde à realidade do host, com ou sem
+  #   reboot pendente.
+  ansible.builtin.dnf:
+    name: "kernel-modules-extra-{{ ansible_kernel }}"
+    state: present
+  tags: [docker]
+
+- name: Módulo xt_addrtype carregado e persistente após reboot
+  community.general.modprobe:
+    name: xt_addrtype
+    state: present
+    persistent: present
+  tags: [docker]
+
 - name: Docker ativo e habilitado
   ansible.builtin.service:
     name: docker
