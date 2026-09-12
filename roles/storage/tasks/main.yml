@@ -46,12 +46,30 @@
 - name: Detectar se o disco de mídia está conectado
   # CORREÇÃO (B1) — `check_mode: false` é essencial aqui.
   #
-  # Módulos command/shell NÃO rodam em `--check` (o Ansible não tem como saber
-  # se um comando arbitrário é seguro). Eles são PULADOS, e a variável
-  # registrada vira apenas {"skipped": true} — sem .rc, sem .stdout.
+  # Módulos command/shell NÃO executam o comando em `--check` (o Ansible não
+  # tem como saber se um comando arbitrário é seguro): a task é PULADA.
   #
-  # Consequência: a task seguinte, que faz `when: media_blkid.rc == 0`, quebra
-  # com erro de atributo indefinido. O playbook inteiro morre em --check.
+  # O QUE SOBRA NA VARIÁVEL REGISTRADA — reconferido em 12/09/2026, porque o
+  # comportamento MUDOU e a versão anterior deste comentário (que é a
+  # referência citada pelo CLAUDE.md e pelo README) descrevia o antigo:
+  #
+  #   Antes, e foi o que originou esta regra:
+  #       o resultado vinha sem .rc e sem .stdout, então usar a variável
+  #       estourava erro de atributo indefinido — falha barulhenta, na hora.
+  #
+  #   Hoje, medido contra o ansible-core 2.21.2 desta estação:
+  #       o módulo declara supports_check_mode=True e devolve
+  #           rc: 0, stdout: "", stderr: "", skipped: true
+  #       (ver o ramo `else` do check_mode em ansible/modules/command.py, e
+  #        a mensagem "Command would have run if not in check mode")
+  #
+  # ISSO TORNOU O ESQUECIMENTO MAIS PERIGOSO, NÃO MENOS. A regra continua a
+  # mesma; o que mudou é o preço de quebrá-la. Antes, faltar o check_mode
+  # derrubava o playbook e você corrigia. Agora ele devolve um valor plausível
+  # e FALSO — e rc 0 é justamente o código de "deu certo". Sem check_mode:
+  # false nesta task, o `when: media_blkid.rc == 0` logo abaixo concluiria que
+  # o disco de mídia está conectado numa simulação em que o blkid nunca rodou,
+  # e a montagem apareceria no diff como se fosse mesmo acontecer.
   #
   # `check_mode: false` diz "esta task é somente leitura, execute-a mesmo em
   # simulação". Combinada com `changed_when: false`, ela nunca reporta mudança

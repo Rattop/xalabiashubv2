@@ -180,8 +180,9 @@
 
     - name: "Verificação 1 — sintaxe das units systemd"
       # check_mode: false — ver explicação detalhada em roles/storage.
-      # Resumo: command não roda em --check, a variável registrada fica sem
-      # .stdout, e o loop de relatório abaixo quebraria com erro de atributo.
+      # Resumo: command não executa em --check. Sem isto, o relatório abaixo
+      # leria o stdout VAZIO que o módulo devolve em simulação e imprimiria
+      # "OK" para as quatro units sem ter verificado nenhuma.
       ansible.builtin.command: "systemd-analyze verify /etc/systemd/system/{{ item }}.service"
       loop: [cloudflared, ttyd, playit, wings]
       register: unit_verify

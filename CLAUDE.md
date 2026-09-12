@@ -119,11 +119,12 @@ Regras de uso:
   pacotes, rode sem `--check` direto no laboratório (é descartável,
   criado exatamente para isso).
 - **Toda task `command`/`shell` de leitura pura precisa de
-  `check_mode: false` + `changed_when: false`.** Sem isso, `--check`
-  quebra com erro de atributo indefinido, porque esses módulos são
-  pulados em simulação e a variável registrada fica sem `.stdout`/`.rc`.
-  Veja `roles/storage/tasks/main.yml` para o padrão de referência e o
-  comentário completo explicando o porquê.
+  `check_mode: false` + `changed_when: false`.** Esses módulos são
+  pulados em simulação, e no ansible-core 2.21 a variável registrada não
+  fica indefinida como antes: ela vem com `rc: 0` e `stdout` vazio. A
+  omissão, portanto, não falha mais — ela produz um resultado plausível e
+  errado, que é pior. Veja `roles/storage/tasks/main.yml` para o padrão de
+  referência e o comentário completo, com a medição.
 - **Teste de idempotência**: depois de qualquer correção, rode o
   playbook duas vezes seguidas. A segunda deve reportar `changed=0`,
   exceto para tasks explicitamente não-idempotentes por natureza (e

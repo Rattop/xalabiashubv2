@@ -188,15 +188,33 @@ A role descobre os GIDs numéricos com `getent group` e os injeta no compose.
 
 ### 4.4 Por que `--check` exigiu cuidado especial
 
-Módulos `command` e `shell` **não rodam** em modo simulação — o Ansible não
-tem como saber se um comando arbitrário é seguro. Eles são pulados, e a
-variável registrada fica sem `.stdout` e sem `.rc`.
+Módulos `command` e `shell` **não executam** o comando em modo simulação — o
+Ansible não tem como saber se um comando arbitrário é seguro. A task é pulada.
 
 Toda task que apenas **coleta informação** para decidir outra coisa leva
 `check_mode: false` (execute mesmo em simulação) junto de
-`changed_when: false` (nunca reporte mudança). Sem isso, `--check` quebraria
-com erro de atributo indefinido — justamente no comando que se recomenda
-rodar primeiro.
+`changed_when: false` (nunca reporte mudança).
+
+**O motivo dessa regra mudou — e ficou mais grave.** Ela nasceu porque a
+variável registrada ficava sem `.stdout` e sem `.rc`, e usá-la estourava erro
+de atributo indefinido: uma falha barulhenta e imediata. Reconferido em
+12/09/2026 contra o ansible-core 2.21.2, não é mais isso que acontece:
+
+```
+TASK [comando] ***  skipping: [localhost]
+"r": { "rc": 0, "stdout": "", "stderr": "", "skipped": true,
+       "msg": "Command would have run if not in check mode" }
+```
+
+O módulo hoje declara `supports_check_mode=True` e, sem `creates`/`removes`,
+devolve `rc = 0` com saída vazia (`ansible/modules/command.py`). Ou seja: o
+esquecimento deixou de falhar e passou a entregar um valor plausível e
+**falso** — `rc = 0` é exatamente o código de "deu certo". Um
+`when: media_blkid.rc == 0` passaria a concluir "o disco de mídia está
+conectado" numa simulação em que o `blkid` nunca chegou a rodar.
+
+*Princípio geral: um valor padrão que se parece com sucesso é mais perigoso
+que um erro. O erro você conserta; o falso sucesso você acredita.*
 
 ### 4.5 Por que existem toggles de reversão
 
