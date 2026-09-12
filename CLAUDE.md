@@ -80,7 +80,7 @@ roles/docker/      engine + plugin compose
 roles/selinux/     booleans de container + política customizada do ttyd
 roles/firewall/    firewalld declarativo
 roles/ingress/     nginx, cloudflared, ttyd
-roles/media/       Jellyfin, Navidrome, Picard
+roles/media/       Jellyfin, Navidrome
 roles/gameserver/  Pelican Panel, Wings, Playit
 roles/filemanager/ FileBrowser (upload de arquivos remoto)
 
@@ -246,7 +246,7 @@ antes de considerar esta credencial definitiva.
 | Jellyfin | `0.0.0.0:8096` | não — firewalld REJEITA |
 | ttyd | `127.0.0.1:7681` | não — loopback |
 | Navidrome | `127.0.0.1:4533` | não — loopback |
-| Picard | `127.0.0.1:5800` | não — loopback |
+| FileBrowser | `127.0.0.1:8080` | não — loopback |
 | Pelican Panel | `127.0.0.1:8081` | não — loopback |
 | MariaDB / Redis | rede do compose | não — sem porta publicada |
 | SSH | `0.0.0.0:22` | sim |
@@ -301,7 +301,7 @@ está em `cloudflare_ingress`, em `group_vars/all/main.yml`):
 | `lab-painel.<domínio>`   | `localhost:8081` (painel, SEM passar pelo nginx) |
 | `lab-jellyfin.<domínio>` | `localhost:8096` |
 | `lab-music.<domínio>`    | `localhost:4533` |
-| `lab-capas.<domínio>`    | `localhost:5800` |
+| `lab-files.<domínio>`    | `localhost:8080` |
 | `lab-ssh.<domínio>`      | `localhost:7681` |
 
 Esses nomes entram como override de `cloudflare_ingress` em

@@ -34,5 +34,6 @@ services:
 
     volumes:
       - ./data:/data:z
-      # :ro — o Navidrome só lê e indexa. Quem escreve tags é o Picard.
+      # :ro — o Navidrome só lê e indexa, nunca escreve na biblioteca. Desde a
+      # remoção do Picard (12/09/2026) nenhum container tem escrita aqui.
       - {{ music_dir }}:/music:ro

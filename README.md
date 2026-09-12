@@ -50,7 +50,6 @@ de engenharia importa mais que o orçamento.
 │                 │               └─► Pelican Panel (proxy)         │
 │                 ├─► Jellyfin :8096      (vídeo, VAAPI)            │
 │                 ├─► Navidrome :4533     (música)                  │
-│                 ├─► Picard :5800        (metadados)               │
 │                 ├─► ttyd :7681          (terminal web)            │
 │                 └─► FileBrowser :8080   (upload de arquivos)      │
 │                                                                   │
@@ -102,7 +101,7 @@ para redirecionar ou escanear.
     ├── firewall/            firewalld declarativo
     ├── docker/              Engine e plugin compose
     ├── ingress/             nginx, cloudflared, ttyd
-    ├── media/               Jellyfin, Navidrome, Picard
+    ├── media/               Jellyfin, Navidrome
     ├── gameserver/          Pelican Panel, Wings, Playit
     └── filemanager/         FileBrowser (upload de arquivos)
 ```
@@ -325,6 +324,21 @@ processo perdia acesso ao `/config` que a própria imagem já é dona. Correçã
 os diretórios montados (`database/` e a raiz de upload) ficam com dono
 numérico `1000:1000` fixo em todo host, e nem o compose nem a inicialização
 usam `{{ app_uid }}` para este serviço específico.
+
+**`capas.<domínio>` servia um desktop gráfico sem autenticação nenhuma**
+Medido de fora durante a convergência de produção de 12/09/2026: enquanto
+`jellyfin`, `music` e `painel` respondiam `302` (redirect para o login do
+Cloudflare Access), `capas` respondia `200` — chegava direto na origem, sem
+Access na frente. E o que havia na origem era a interface noVNC do Picard, que
+a imagem entrega com `WEB_AUTHENTICATION=0` e `VNC_PASSWORD` vazio: sessão
+gráfica interativa, sem senha, com escrita sobre a biblioteca de música
+inteira. A rota existia em `cloudflare_ingress` desde antes deste repositório,
+e o bind local em `127.0.0.1` aplicado na mesma convergência fechou só a LAN —
+o caminho pelo túnel seguia aberto. O Picard foi **removido** (usado uma vez,
+fora da suíte): remover é melhor que proteger o que não se usa.
+*Lição: o inventário de rotas do túnel precisa ser revisado junto com o
+inventário de serviços. Uma rota que ficou para trás não some do mapa de
+exposição — só sai do seu radar.*
 
 **`services.yml` não tolera o `cloudflared` pulado no laboratório**
 `diag.yml` já tem uma exceção documentada para `cloudflared inactive` no

@@ -3,8 +3,10 @@
 # ROLE: media
 # -----------------------------------------------------------------------------
 # O QUE FAZ
-#   Provisiona as três stacks de mídia: Jellyfin (vídeo), Navidrome (música) e
-#   Picard (organização de metadados musicais).
+#   Provisiona as duas stacks de mídia: Jellyfin (vídeo) e Navidrome (música).
+#
+#   O Picard (organização de metadados musicais) foi REMOVIDO em 12/09/2026 —
+#   ver o bloco de limpeza no fim deste arquivo para o motivo.
 #
 # COMO OS GIDs DE VÍDEO SÃO RESOLVIDOS — o detalhe mais sutil desta role
 #
@@ -100,13 +102,13 @@
     owner: "{{ app_user }}"
     group: "{{ app_group }}"
     mode: '0750'
-  loop: [jellyfin, navidrome, picard]
+  loop: [jellyfin, navidrome]
   tags: [media]
 
 - name: Diretórios de dados persistentes
-  # Estes diretórios guardam o ESTADO das aplicações: banco do Jellyfin,
-  # biblioteca indexada do Navidrome, configuração do Picard. Se sumirem, você
-  # perde histórico de reprodução, usuários e metadados.
+  # Estes diretórios guardam o ESTADO das aplicações: banco do Jellyfin e
+  # biblioteca indexada do Navidrome. Se sumirem, você perde histórico de
+  # reprodução e usuários.
   #
   # Ficam no host (bind mount), não em volumes Docker nomeados, para que um
   # `docker compose down -v` acidental não os destrua.
@@ -120,7 +122,6 @@
     - jellyfin/config
     - jellyfin/cache
     - navidrome/data
-    - picard/config
   tags: [media]
 
 - name: Compose files das stacks de mídia
@@ -130,7 +131,7 @@
     owner: "{{ app_user }}"
     group: "{{ app_group }}"
     mode: '0640'
-  loop: [jellyfin, navidrome, picard]
+  loop: [jellyfin, navidrome]
   tags: [media]
 
 - name: Remover diretório órfão ~/jellyfin
@@ -142,5 +143,43 @@
   # coisas deixa um rastro de restos que ninguém sabe se pode apagar.
   ansible.builtin.file:
     path: "{{ app_home }}/jellyfin"
+    state: absent
+  tags: [media, cleanup]
+
+# -----------------------------------------------------------------------------
+# REMOÇÃO DO PICARD — 12/09/2026
+# -----------------------------------------------------------------------------
+# POR QUE FOI REMOVIDO
+#
+#   Medido de fora, pela internet, durante a convergência de produção:
+#
+#       $ curl -o /dev/null -w '%{http_code}' https://capas.<domínio>/
+#       200
+#
+#   Enquanto jellyfin, music e painel respondiam 302 (redirect para o login do
+#   Cloudflare Access), o capas respondia 200 — ou seja, chegava direto na
+#   origem, SEM política de Access na frente. E o que havia na origem era a
+#   interface noVNC do Picard, que a imagem entrega com WEB_AUTHENTICATION=0 e
+#   VNC_PASSWORD vazio: uma sessão gráfica interativa, sem autenticação
+#   nenhuma, com permissão de ESCRITA sobre a biblioteca de música inteira.
+#
+#   A rota já existia em cloudflare_ingress desde antes deste repositório, e o
+#   bind local em 127.0.0.1 (feito nesta mesma convergência) fechou só a LAN —
+#   o caminho pelo túnel continuava aberto.
+#
+#   O usuário decidiu remover em vez de proteger: usou o Picard uma única vez e
+#   a ferramenta não faz mais parte da suíte. Remover é melhor do que proteger
+#   o que não se usa — cada serviço a menos é uma superfície a menos.
+#
+#   LIÇÃO: o inventário de rotas do túnel precisa ser revisado junto com o
+#   inventário de serviços. Um serviço que você parou de usar mas cuja rota
+#   ficou para trás não some do mapa de exposição — ele só sai do seu radar.
+#
+# ATENÇÃO: esta task APAGA {{ app_home }}/docker/picard, inclusive o ./config
+# com as preferências do Picard. Se um dia precisar recuperar algo de lá,
+# recupere ANTES de rodar esta role.
+- name: Remover a stack do Picard (serviço descontinuado)
+  ansible.builtin.file:
+    path: "{{ app_home }}/docker/picard"
     state: absent
   tags: [media, cleanup]

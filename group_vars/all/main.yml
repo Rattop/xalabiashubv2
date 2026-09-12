@@ -111,7 +111,6 @@ cloudflare_ingress:
   - { hostname: "jellyfin.{{ base_domain }}", service: "http://localhost:8096" }
   - { hostname: "ssh.{{ base_domain }}",      service: "http://localhost:7681" }
   - { hostname: "music.{{ base_domain }}",    service: "http://localhost:4533" }
-  - { hostname: "capas.{{ base_domain }}",    service: "http://localhost:5800" }
   - { hostname: "mapa.{{ base_domain }}",     service: "http://{{ host_lan_ip }}:8100" }
   - { hostname: "files.{{ base_domain }}",    service: "http://localhost:8080" }
 
@@ -124,7 +123,6 @@ docker_stacks:
   - pelican-panel
   - jellyfin
   - navidrome
-  - picard
   - filebrowser
 
 # Serviços systemd nativos, em ordem de dependência.
@@ -157,7 +155,7 @@ jellyfin_privileged:        false
 # configurações da biblioteca (não é o padrão do Jellyfin).
 jellyfin_media_readonly:    true
 
-# Endereço em que Navidrome e Picard publicam suas portas.
+# Endereço em que o Navidrome publica sua porta.
 #   127.0.0.1 -> acesso só pelo túnel Cloudflare (com autenticação do Access)
 #   0.0.0.0   -> qualquer dispositivo da LAN, SEM autenticação de borda
 # Era 0.0.0.0 antes deste projeto. Se você usa app de música apontando direto

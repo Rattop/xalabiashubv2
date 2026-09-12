@@ -6,8 +6,8 @@
 #   Provisiona o FileBrowser: gerenciador de arquivos web com upload remoto.
 #
 # POR QUE UMA ROLE PRÓPRIA, E NÃO DENTRO DE media
-#   media/ é especificamente "biblioteca de mídia" (Jellyfin/Navidrome/
-#   Picard) — os três leem a mesma coleção em {{ music_dir }}/{{ media_root }}.
+#   media/ é especificamente "biblioteca de mídia" (Jellyfin e Navidrome) —
+#   os dois leem a mesma coleção em {{ music_dir }}/{{ media_root }}.
 #   O FileBrowser é outra coisa: uma área de upload de propósito geral, com
 #   permissão de ESCRITA e EXCLUSÃO pela própria interface web. Misturar as
 #   duas correria o risco de o usuário apagar pelo FileBrowser um arquivo que

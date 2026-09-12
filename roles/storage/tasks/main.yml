@@ -124,8 +124,8 @@
   tags: [storage]
 
 - name: Diretório de música com dono correto
-  # O Navidrome lê e o Picard escreve aqui, ambos como UID 1000. Se o dono
-  # estiver errado, o Navidrome indexa uma biblioteca vazia sem reclamar.
+  # O Navidrome lê aqui como UID 1000. Se o dono estiver errado, ele indexa
+  # uma biblioteca vazia sem reclamar.
   ansible.builtin.file:
     path: "{{ music_dir }}"
     state: directory

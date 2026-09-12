@@ -20,7 +20,7 @@
 #      +--> localhost:80   -> nginx -> site estático / painel Pelican
 #      +--> localhost:8096 -> Jellyfin
 #      +--> localhost:4533 -> Navidrome
-#      +--> localhost:5800 -> Picard
+#      +--> localhost:8080 -> FileBrowser
 #      +--> localhost:7681 -> ttyd
 #
 #   O detalhe que faz isso ser seguro: o roteador não tem NENHUMA porta
