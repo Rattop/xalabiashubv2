@@ -139,6 +139,13 @@
   # com o daemon do Docker de qualquer forma, não importa qual usuário digitou
   # `docker run`), então esta task roda como root — sem become_user — em vez
   # de {{ app_user }}.
+  #
+  # `no_log: true` pelo mesmo motivo documentado em roles/gameserver (incidente
+  # de 12/09/2026): a senha do admin entra na linha de comando, e o Ansible
+  # ecoa o `cmd` inteiro em qualquer falha — foi assim que esta senha vazou
+  # para o terminal durante a validação no laboratório. O vault protege o
+  # segredo no Git; só o no_log protege na saída do playbook.
+  no_log: true
   ansible.builtin.shell:
     cmd: |
       set -euo pipefail

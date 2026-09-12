@@ -111,6 +111,25 @@
   # A versão anterior tinha as senhas do MariaDB em texto claro, commitadas
   # num repositório público. Agora elas vêm do vault cifrado e nunca tocam
   # o Git.
+  #
+  # INCIDENTE REAL, 12/09/2026 — por que `no_log: true`:
+  #
+  #   O ansible.cfg deste projeto tem `diff = True` por padrão (decisão boa:
+  #   ver o que muda antes de mudar). Mas `--diff` num template imprime o
+  #   arquivo RENDERIZADO inteiro — e este arquivo renderizado contém as três
+  #   senhas do vault em texto claro. Numa convergência de produção, a saída
+  #   despejou DB_PASSWORD, MYSQL_ROOT_PASSWORD e REDIS_PASSWORD no terminal,
+  #   de onde foram parar em scrollback e em log de sessão.
+  #
+  #   O vault protege o segredo EM REPOUSO (no Git). Não protege o segredo em
+  #   TRÂNSITO pela saída do playbook — isso é `no_log`, e é responsabilidade
+  #   de cada task que renderiza segredo dizer isso explicitamente.
+  #
+  #   Custo assumido: quando esta task falhar, o erro vem sem detalhe ("the
+  #   output has been hidden"). Para depurar, rode a task isolada com
+  #   `--tags pelican -e "ansible_no_log=false"` num ambiente onde a saída
+  #   possa ser vista — laboratório, nunca produção com plateia.
+  no_log: true
   ansible.builtin.template:
     src: pelican-compose.yml.j2
     dest: "{{ app_home }}/docker/pelican-panel/docker-compose.yml"
