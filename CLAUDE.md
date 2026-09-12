@@ -326,6 +326,67 @@ Para testar o painel no lab é preciso antes transformar isso em variável
 recriar o container do painel. Os outros cinco serviços não têm esse
 problema e podem ser testados sem mudança nenhuma.
 
+## Pendências técnicas conhecidas (12/09/2026) — não investigadas ainda
+
+Levantadas na rodada de validação dos playbooks em produção. Nenhuma é
+catastrófica; ficaram registradas de propósito em vez de corrigidas na hora,
+porque a prioridade passou a ser monitoramento/alerta.
+
+### 1. `var/lib/mysql` quebra a idempotência do setup.yml
+
+`roles/gameserver` força `{{ app_home }}/docker/pelican-panel/var/lib/mysql`
+para `1000:1000`, mas o MariaDB roda como **uid 999** dentro do container e o
+entrypoint da imagem faz `chown` de volta a cada start. Os dois ficam se
+revezando: **o `setup.yml` sempre reportará `changed` nessa task**, mesmo sem
+nada ter mudado de verdade.
+
+Não quebra nada (o banco funciona), mas destrói a propriedade que o próprio
+projeto usa como critério de correção — "a segunda execução deve dar
+changed=0". Enquanto não for corrigido, `changed=1` numa convergência limpa é
+esperado e é ESTA task.
+
+Correção provável: parar de gerenciar o dono desse diretório (deixar para o
+container, que é quem sabe qual uid precisa), ou alinhar o valor com o uid
+real do mysql. Decidir exige olhar o que a imagem faz no start — não foi
+feito.
+
+### 2. Avisos de deprecação do ansible-core — REVISAR
+
+Toda execução emite dois tipos de `[DEPRECATION WARNING]`, e ambos são
+remoções reais, não ruído cosmético. O ansible-core aqui é **2.21.3**:
+
+- **`DEFAULT_MANAGED_STR`** (removido no **2.23**): o `ansible_managed` está
+  definido no `ansible.cfg`. Correção: tirar a linha de lá e declarar
+  `ansible_managed` como variável normal em `group_vars/all/main.yml`. Os
+  `{{ ansible_managed }}` dos templates continuam funcionando.
+
+- **`INJECT_FACTS_AS_VARS`** (removido no **2.24**): o código usa facts no
+  formato antigo de variável de topo — `ansible_os_family`,
+  `ansible_distribution`, `ansible_kernel`, `ansible_default_ipv4`,
+  `ansible_mounts`, `ansible_devices`, `ansible_selinux`, `ansible_date_time`.
+  Correção: reescrever para `ansible_facts['os_family']` etc. e só ENTÃO
+  colocar `inject_facts_as_vars = False` no `ansible.cfg` — nessa ordem, senão
+  quebra tudo de uma vez.
+
+  São ~12-15 referências, em `playbooks/setup.yml`, `playbooks/diag.yml`,
+  `roles/docker`, `roles/selinux`, `roles/firewall`,
+  `group_vars/all/main.yml` (o `host_lan_ip`) e `templates/diag-report.j2`.
+  Atenção: `inventory_hostname`, `playbook_dir` e `ansible_play_hosts_all`
+  **não** são facts, são variáveis mágicas — não mudam.
+
+**NÃO** usar `deprecation_warnings = False` como "correção". Silenciar o aviso
+não adia a remoção, só remove o lembrete dela — e este repositório tem uma
+seção inteira no README sobre o custo de trocar erro visível por silêncio.
+
+### 3. Estado da validação dos playbooks em produção
+
+| Playbook | Estado em 12/09/2026 |
+|---|---|
+| `setup.yml` | converge; `changed=1` residual pela pendência 1 |
+| `services.yml` | **limpo, duas execuções seguidas com `changed=0`** |
+| `diag.yml` | limpo: 7/7 serviços ativos, sem falha |
+| `update.yml` | em execução; ver resultado antes de confiar |
+
 ## Como investigar um erro (método obrigatório, não sugestão)
 
 Este projeto foi construído inteiro com esse método, e ele já pagou o
