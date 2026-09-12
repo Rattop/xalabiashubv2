@@ -100,8 +100,43 @@
       failed_when: false
       check_mode: false
 
+    # BUG REAL, reproduzido no laboratório em 12/09/2026:
+    #
+    #   O loop percorre docker_stacks — que são nomes de STACK, ou seja, de
+    #   diretório de compose — e os entregava ao `docker logs`, que espera
+    #   nome de CONTAINER. Os dois só coincidem por acaso em jellyfin,
+    #   navidrome e picard, onde a stack tem um serviço só. Na do painel, não:
+    #
+    #       $ docker logs --tail 5 pelican-panel
+    #       Error response from daemon: No such container: pelican-panel
+    #
+    #   Os containers de verdade são pelican-panel-pelican-1, -database-1 e
+    #   -cache-1. E como a task tem failed_when: false, o erro nunca subiu à
+    #   superfície: a seção [ LOGS DOS CONTAINERS ] do relatório saía VAZIA
+    #   exatamente para o serviço com o maior histórico de problemas deste
+    #   projeto. Relatório vazio é indistinguível de "não há nada errado".
+    #
+    #   LIÇÃO: failed_when: false num diagnóstico troca um erro visível por um
+    #   silêncio. Só é aceitável quando a ausência do dado é ela própria uma
+    #   informação esperada — não foi o caso aqui.
+    #
+    #   `docker compose logs` corrige na raiz: ele recebe o DIRETÓRIO da
+    #   stack, que é o que docker_stacks realmente nomeia, e devolve o log de
+    #   todos os serviços dela. No painel isso traz pelican + database + cache
+    #   juntos, que é precisamente o conjunto que se precisa ler lado a lado
+    #   quando ele não sobe.
+    #
+    #   --no-color é explícito de propósito, mas não faz milagre: medido no
+    #   laboratório, o compose já desliga a própria coloração sozinho quando a
+    #   saída não é um terminal (que é o caso sob o Ansible), e escapes ANSI
+    #   emitidos DENTRO da linha pela própria aplicação — o Caddy do painel
+    #   escreve "\e[34mINFO\e[0m" — atravessam de qualquer jeito. A flag fica
+    #   para o caso de a task um dia rodar com terminal anexado; o relatório
+    #   ainda pode conter escape vindo do app, e isso é limitação conhecida.
     - name: Logs dos containers
-      ansible.builtin.command: "docker logs --tail 20 {{ item }}"
+      ansible.builtin.command:
+        cmd: docker compose logs --tail 20 --no-color
+        chdir: "{{ app_home }}/docker/{{ item }}"
       loop: "{{ docker_stacks }}"
       register: container_logs
       changed_when: false
