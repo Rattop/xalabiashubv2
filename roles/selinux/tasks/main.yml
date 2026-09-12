@@ -128,9 +128,21 @@
   loop: "{{ selinux_policy_src.results }}"
   loop_control:
     label: "{{ item.item }}"
+  # A comparação é por LINHA EXATA, não por substring da saída inteira.
+  #
+  # A versão anterior fazia `item.item not in selinux_modules.stdout`, que
+  # pergunta "este nome aparece em algum lugar do texto?". Basta um módulo
+  # futuro cujo nome CONTENHA o de outro (ttyd_login_fix dentro de
+  # ttyd_login_fix_v2, por exemplo) para a guarda concluir "já está carregado"
+  # e pular a instalação em silêncio — o pior tipo de falha, porque o playbook
+  # reporta sucesso.
+  #
+  # Confirmado no laboratório em 12/09/2026: `semodule -l` no AlmaLinux 10
+  # imprime um nome de módulo por linha, sem coluna de versão, então
+  # stdout_lines já dá a comparação exata sem precisar de tratamento.
   when: >-
     item.changed or
-    item.item not in (selinux_modules.stdout | default(''))
+    item.item not in (selinux_modules.stdout_lines | default([]))
   tags: [selinux, security]
 
 - name: Contexto SELinux correto em /etc/cloudflared
