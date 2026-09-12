@@ -1,10 +1,6 @@
 # XalabiasHub
 
-**Infraestrutura como Código para um homelab de produção, escrita em Ansible.**
-
-AlmaLinux 10 em hardware bare-metal, provisionado do zero e mantido por
-playbooks versionados. Sem passo manual, sem segredo em texto claro, sem
-"funciona na minha máquina".
+**Infraestrutura como código para um homelab em produção, implementada em Ansible.**
 
 ![Ansible](https://img.shields.io/badge/Ansible-2.15%2B-EE0000?logo=ansible&logoColor=white)
 ![AlmaLinux](https://img.shields.io/badge/AlmaLinux-10.2-0F4266?logo=almalinux&logoColor=white)
@@ -13,27 +9,33 @@ playbooks versionados. Sem passo manual, sem segredo em texto claro, sem
 
 ---
 
-## Sobre este projeto e sobre mim
+## Visão geral
 
-Sou **estudante de Gestão da Tecnologia da Informação**, em transição de
-carreira para **SysAdmin / DevOps**. Trabalho hoje com recepção e auditoria
-noturna em hotelaria, e este repositório é onde estudo infraestrutura de
-verdade — não em laboratório descartável, mas num servidor que roda 24/7 e
-que a minha casa realmente usa.
+Este repositório descreve, de forma integral e versionada, a configuração de
+um servidor doméstico em operação contínua: AlmaLinux 10 sobre hardware
+bare-metal, executando serviços de mídia, um painel de servidores de jogo e
+uma camada de entrada baseada em túnel reverso. O objetivo é que o host seja
+reproduzível a partir do repositório, sem etapas manuais, sem segredos em
+texto claro e sem configuração que exista apenas na máquina.
 
-**Este README documenta tanto os acertos quanto os erros.** Existe uma seção
-inteira sobre um incidente de credenciais vazadas que eu mesmo causei, e
-outra sobre dívidas técnicas que ainda não resolvi. Isso é deliberado: acho
-mais honesto — e mais útil para quem avalia — mostrar como eu diagnostico e
-corrijo do que fingir que nunca errei.
+O hardware é um notebook de 2017 com processador Core i3 e 8 GB de memória.
+A limitação é tratada como restrição de projeto: cada serviço acrescentado é
+avaliado quanto ao consumo de memória e CPU, e decisões de arquitetura que
+seriam indiferentes em hardware abundante — como a escolha de não hospedar a
+própria stack de observabilidade — tornam-se determinantes.
 
-O hardware é um notebook Acer de 2017 com Core i3 e 8 GB de RAM. A limitação
-é proposital: obriga a pensar em consumo de recurso, e prova que a disciplina
-de engenharia importa mais que o orçamento.
+A documentação registra tanto as decisões consolidadas quanto os defeitos
+identificados ao longo do desenvolvimento. Esse registro é deliberado. Em
+infraestrutura, a configuração final costuma ser menos instrutiva que o
+percurso de diagnóstico que a produziu: um arquivo correto não explica por
+que as alternativas foram descartadas, ao passo que o relato de uma falha
+preserva o raciocínio e impede que o mesmo erro seja reintroduzido.
 
 ---
 
 ## 1. Arquitetura
+
+### 1.1 Topologia
 
 ```
                           Internet
@@ -51,160 +53,182 @@ de engenharia importa mais que o orçamento.
 │                 ├─► Jellyfin :8096      (vídeo, VAAPI)            │
 │                 ├─► Navidrome :4533     (música)                  │
 │                 ├─► ttyd :7681          (terminal web)            │
-│                 └─► FileBrowser :8080   (upload de arquivos)      │
+│                 └─► FileBrowser :8080   (transferência de arquivos)│
 │                                                                   │
 │   playit ──────────► servidores de jogo (TCP/UDP bruto)           │
-│   wings ───────────► cria/destrói containers de jogo              │
-│   tailscaled ──────► tailnet do usuário (acesso remoto pessoal,   │
-│                       independente do túnel Cloudflare acima)     │
+│   wings ───────────► cria e destrói containers de jogo            │
+│   tailscaled ──────► rede privada do mantenedor, independente     │
+│                       do túnel Cloudflare acima                   │
 │                                                                   │
-│   firewalld: só 22 e 2022 abertos para a LAN                      │
+│   firewalld: apenas 22 e 2022 acessíveis pela rede local          │
 │   SELinux: enforcing, com política customizada para o ttyd        │
 │                                                                   │
 │   Armazenamento:  LVM/XFS (sistema)  ·  BTRFS 1,8 TB (mídia)      │
 └───────────────────────────────────────────────────────────────────┘
 ```
 
-**A decisão de arquitetura mais importante:** nenhuma porta é redirecionada
-no roteador. O `cloudflared` e o `playit` abrem conexões de **saída** e o
-tráfego volta por elas. Não existe superfície para escanear na internet, e é
-por isso que o firewall pode manter 80, 7681 e 8096 fechados até para a rede
-local — quem os acessa é o túnel, a partir de `localhost`. O Tailscale segue
-a mesma lógica: conecta de saída e usa NAT traversal/DERP, sem porta nenhuma
-para redirecionar ou escanear.
+### 1.2 Princípio de exposição
+
+A decisão estruturante do projeto é a ausência de redirecionamento de portas
+no roteador. Tanto o `cloudflared` quanto o `playit` estabelecem conexões de
+**saída**, e o tráfego de entrada retorna por elas. Disso decorrem duas
+consequências: não existe superfície exposta a varredura na internet, e o
+firewall pode manter fechadas, inclusive para a rede local, as portas 80,
+7681 e 8096 — quem as acessa é o túnel, a partir de `localhost`.
+
+O `tailscaled`, introduzido posteriormente para acesso administrativo remoto,
+observa o mesmo modelo: conecta de saída e recorre a NAT traversal e a relays
+DERP, sem exigir porta redirecionada.
 
 ---
 
 ## 2. Estrutura do repositório
 
 ```
-├── ansible.cfg              Configuração do Ansible (diff ligado por padrão)
+├── ansible.cfg              Configuração do Ansible (diff habilitado por padrão)
 ├── inventory.ini            Hosts: prod (bare-metal) e lab (clone virtual)
 ├── deploy.sh                Wrapper: simula, confirma, aplica
 ├── requirements.yml         Collections necessárias
 │
 ├── group_vars/all/
-│   ├── main.yml             ÚNICA fonte de verdade da configuração
+│   ├── main.yml             Fonte única de verdade da configuração
 │   └── vault.yml            Segredos cifrados (não versionado)
 │
 ├── playbooks/
 │   ├── setup.yml            Convergência completa do host
-│   ├── services.yml         Garante serviços e stacks de pé
+│   ├── services.yml         Garante serviços e stacks em execução
 │   ├── update.yml           Manutenção: pacotes, imagens, limpeza
-│   └── diag.yml             Diagnóstico read-only, com verificações
+│   └── diag.yml             Diagnóstico somente leitura, com verificações
 │
 └── roles/
-    ├── common/              Pacotes, usuário, sudo, hardening SSH
-    ├── tailscale/           Acesso remoto pessoal via tailnet
-    ├── storage/             Montagem BTRFS via fstab cirúrgico
-    ├── selinux/             Booleans + política customizada do ttyd
+    ├── common/              Pacotes, usuário, sudo, endurecimento de SSH
+    ├── tailscale/           Acesso remoto administrativo
+    ├── storage/             Montagem BTRFS por edição cirúrgica do fstab
+    ├── selinux/             Booleans e políticas locais
     ├── firewall/            firewalld declarativo
     ├── docker/              Engine e plugin compose
     ├── ingress/             nginx, cloudflared, ttyd
     ├── media/               Jellyfin, Navidrome
     ├── gameserver/          Pelican Panel, Wings, Playit
-    └── filemanager/         FileBrowser (upload de arquivos)
+    └── filemanager/         FileBrowser
 ```
 
 ---
 
-## 3. Como usar
+## 3. Requisitos
 
-### Preparação (uma vez)
+- Ansible Core 2.15 ou superior no nó de controle.
+- Acesso SSH por chave ao host, com privilégio de escalonamento.
+- Host baseado em Enterprise Linux 9 ou superior (AlmaLinux, Rocky, RHEL);
+  as roles pressupõem `dnf`, `firewalld` e política SELinux *targeted*.
+- Credencial do túnel Cloudflare, emitida fora deste repositório.
+
+---
+
+## 4. Utilização
+
+### 4.1 Preparação inicial
 
 ```bash
 ansible-galaxy collection install -r requirements.yml
 
 cp group_vars/all/vault.yml.example group_vars/all/vault.yml
-openssl rand -base64 24        # rode uma vez para cada senha
+openssl rand -base64 24        # executar uma vez para cada segredo
 ansible-vault encrypt group_vars/all/vault.yml
 ```
 
-### Execução
+### 4.2 Execução
 
 ```bash
-# 1. SIMULE. Mostra o diff de cada arquivo, sem alterar nada.
+# 1. Simulação. Exibe o diff de cada arquivo sem alterar o host.
 ansible-playbook playbooks/setup.yml --limit lab --check --diff --ask-vault-pass
 
-# 2. Aplique.
+# 2. Aplicação.
 ansible-playbook playbooks/setup.yml --limit lab --ask-vault-pass
 
-# 3. Confirme idempotência: a segunda execução deve dar changed=0.
+# 3. Verificação de idempotência: a segunda execução deve reportar changed=0.
 ansible-playbook playbooks/setup.yml --limit lab --ask-vault-pass | tail -5
 ```
 
-O `./deploy.sh setup --limit lab` embrulha os três passos e pede confirmação
-explícita antes de aplicar.
+O script `./deploy.sh setup --limit lab` encapsula as três etapas e exige
+confirmação explícita antes de aplicar.
 
-### Trabalhar em partes
+### 4.3 Execução seletiva
 
 ```bash
-ansible-playbook playbooks/setup.yml --tags nginx,docker    # só isso
-ansible-playbook playbooks/setup.yml --skip-tags ssh        # tudo menos isso
-ansible-playbook playbooks/setup.yml --list-tasks           # o que rodaria
+ansible-playbook playbooks/setup.yml --tags nginx,docker    # apenas estas roles
+ansible-playbook playbooks/setup.yml --skip-tags ssh        # tudo exceto esta
+ansible-playbook playbooks/setup.yml --list-tasks           # inspeção prévia
 ```
 
-| Playbook | Quando usar |
+### 4.4 Playbooks
+
+| Playbook | Situação de uso |
 |---|---|
-| `setup.yml` | Host novo, ou corrigir deriva de configuração |
-| `services.yml` | Depois de reboot; "voltar ao normal" |
+| `setup.yml` | Host recém-instalado, ou correção de deriva de configuração |
+| `services.yml` | Após reinicialização; restabelecimento do estado esperado |
 | `update.yml` | Manutenção periódica |
-| `diag.yml` | Quando algo quebra (read-only) |
+| `diag.yml` | Diagnóstico após falha (somente leitura) |
 
 ---
 
-## 4. Decisões de engenharia
+## 5. Decisões de engenharia
 
-### 4.1 Por que o `fstab` nunca é copiado inteiro
+### 5.1 O `fstab` não é substituído integralmente
 
-A versão anterior deste projeto fazia `copy: src=files/fstab dest=/etc/fstab`.
-Isso copiava os UUIDs de `/`, `/boot` e `/home` da máquina de origem. Numa
-reinstalação — o cenário que o projeto existe para suportar — o instalador
-cria partições novas com UUIDs novos, e o fstab copiado apontaria para
-volumes inexistentes. **O host não daria boot.**
+Uma versão anterior do projeto copiava o arquivo inteiro
+(`copy: src=files/fstab dest=/etc/fstab`), o que transferia os UUIDs de `/`,
+`/boot` e `/home` da máquina de origem. Numa reinstalação — precisamente o
+cenário que o projeto se propõe a suportar — o instalador cria partições com
+UUIDs novos, e o arquivo copiado passaria a referenciar volumes inexistentes,
+impedindo a inicialização do host.
 
-Hoje só as linhas de mídia são gerenciadas, com `ansible.posix.mount`, que
-edita o arquivo cirurgicamente.
+Atualmente apenas as linhas relativas à mídia são gerenciadas, por meio do
+módulo `ansible.posix.mount`, que edita o arquivo de forma cirúrgica.
 
-*Princípio geral: quando existe um módulo que entende o **formato** do
-arquivo, ele é mais seguro que sobrescrever o arquivo inteiro.*
+*Princípio derivado: quando existe um módulo que compreende o **formato** do
+arquivo, ele oferece garantias que a substituição integral não oferece.*
 
-### 4.2 Por que a política SELinux é `.te` e não `.pp`
+### 5.2 As políticas SELinux são versionadas como `.te`, não `.pp`
 
-O caminho fácil quando o SELinux bloqueia algo é desligá-lo. Este projeto
-faz o contrário para o `ttyd`: uma política de **uma linha**, concedendo
-exatamente uma transição de processo e nada mais.
+A resposta trivial a um bloqueio do SELinux consiste em desativá-lo. Adotou-se
+o procedimento oposto para o `ttyd`: uma política de uma única linha, que
+concede exatamente uma transição de processo.
 
-Ela é versionada como `.te` (código-fonte legível) e compilada no host, não
-como `.pp` (binário). O `.pp` depende da versão da política do sistema e
-vira lixo silencioso na próxima atualização.
+A política é versionada em `.te` — código-fonte legível e auditável — e
+compilada no próprio host. O formato `.pp`, por ser binário e dependente da
+versão da política do sistema, degrada-se silenciosamente após atualizações.
 
-O contraste está documentado de propósito: o Jellyfin ainda usa
-`label:disable`, e isso está listado como dívida, não escondido.
+O contraste é mantido de forma explícita: o Jellyfin ainda recorre a
+`label:disable`, o que consta na seção de limitações em vez de ser omitido.
 
-### 4.3 Por que os GIDs de vídeo são descobertos em tempo de execução
+### 5.3 Os GIDs de vídeo são descobertos em tempo de execução
 
-Para transcodificar por hardware, o Jellyfin precisa dos grupos `render` e
-`video` do host. A tentação é escrever `group_add: [video, render]` — mas o
-Docker resolve nomes de grupo **dentro** do container. O Jellyfin roda
-Debian (`video` = 44) e o host é AlmaLinux (`video` = 39). Os números não
-batem e o acesso ao dispositivo seria negado em silêncio.
+Para transcodificação por hardware, o Jellyfin requer acesso aos grupos
+`render` e `video` do host. A formulação intuitiva — `group_add: [video,
+render]` — não produz o efeito desejado, pois o Docker resolve nomes de grupo
+**dentro** do container. A imagem do Jellyfin baseia-se em Debian, onde
+`video` corresponde ao GID 44, enquanto no host AlmaLinux corresponde ao 39.
+A divergência resultaria em negação silenciosa de acesso ao dispositivo.
 
-A role descobre os GIDs numéricos com `getent group` e os injeta no compose.
+A role obtém os identificadores numéricos por meio de `getent group` e os
+injeta no arquivo de composição.
 
-### 4.4 Por que `--check` exigiu cuidado especial
+### 5.4 O modo de simulação exige tratamento explícito
 
-Módulos `command` e `shell` **não executam** o comando em modo simulação — o
-Ansible não tem como saber se um comando arbitrário é seguro. A task é pulada.
+Os módulos `command` e `shell` não executam o comando em modo `--check`, uma
+vez que o Ansible não dispõe de meios para avaliar se um comando arbitrário é
+seguro. A task é simplesmente omitida.
 
-Toda task que apenas **coleta informação** para decidir outra coisa leva
-`check_mode: false` (execute mesmo em simulação) junto de
-`changed_when: false` (nunca reporte mudança).
+Por conseguinte, toda task cuja finalidade seja **coletar informação** para
+condicionar outra recebe `check_mode: false`, acompanhado de
+`changed_when: false`.
 
-**O motivo dessa regra mudou — e ficou mais grave.** Ela nasceu porque a
-variável registrada ficava sem `.stdout` e sem `.rc`, e usá-la estourava erro
-de atributo indefinido: uma falha barulhenta e imediata. Reconferido em
-12/09/2026 contra o ansible-core 2.21.2, não é mais isso que acontece:
+A justificativa dessa regra alterou-se ao longo do tempo, e tornou-se mais
+grave. Originalmente, a variável registrada permanecia sem `.stdout` e sem
+`.rc`, e seu uso produzia erro de atributo indefinido — falha imediata e
+evidente. Verificação conduzida em 12/09/2026 contra o ansible-core 2.21.2
+demonstra comportamento distinto:
 
 ```
 TASK [comando] ***  skipping: [localhost]
@@ -212,233 +236,76 @@ TASK [comando] ***  skipping: [localhost]
        "msg": "Command would have run if not in check mode" }
 ```
 
-O módulo hoje declara `supports_check_mode=True` e, sem `creates`/`removes`,
-devolve `rc = 0` com saída vazia (`ansible/modules/command.py`). Ou seja: o
-esquecimento deixou de falhar e passou a entregar um valor plausível e
-**falso** — `rc = 0` é exatamente o código de "deu certo". Um
-`when: media_blkid.rc == 0` passaria a concluir "o disco de mídia está
-conectado" numa simulação em que o `blkid` nunca chegou a rodar.
+O módulo passou a declarar `supports_check_mode=True` e, na ausência de
+`creates` ou `removes`, retorna `rc = 0` com saída vazia. A omissão deixou,
+portanto, de falhar, passando a produzir um valor plausível e incorreto: `rc =
+0` é o código convencional de êxito. Uma condição como
+`when: media_blkid.rc == 0` concluiria que o disco de mídia está conectado em
+uma simulação na qual o `blkid` sequer chegou a ser executado.
 
-*Princípio geral: um valor padrão que se parece com sucesso é mais perigoso
-que um erro. O erro você conserta; o falso sucesso você acredita.*
+*Princípio derivado: um valor padrão que se assemelha a êxito é mais perigoso
+que um erro. O erro é corrigido; o falso êxito é acreditado.*
 
-### 4.5 Por que existem toggles de reversão
+### 5.5 Cada endurecimento dispõe de reversão individual
 
-Cada endurecimento de segurança tem uma variável correspondente em
-`group_vars`. Não é indecisão: é reconhecer que hardening pode causar
-regressão, e que **poder reverter uma coisa por vez** é o que torna o
-diagnóstico possível.
+Toda alteração de segurança possui variável correspondente em `group_vars`.
+A intenção não é indecisão, mas o reconhecimento de que endurecimento pode
+provocar regressão, e de que a capacidade de reverter **um item por vez** é o
+que torna o diagnóstico viável.
 
-| Variável | Se quebrar | Reverter para |
+| Variável | Sintoma em caso de regressão | Valor de reversão |
 |---|---|---|
-| `jellyfin_privileged: false` | Transcodificação por hardware falha | `true` |
-| `jellyfin_media_readonly: true` | Metadados não salvam junto à mídia | `false` |
-| `media_bind_address: 127.0.0.1` | App de música na LAN não conecta | `0.0.0.0` |
-| `filebrowser_bind_address: 127.0.0.1` | FileBrowser na LAN não conecta | `0.0.0.0` |
-| `pelican_privileged: false` | Painel não sobe | `true` |
-| `pelican_seccomp_unconfined: false` | Erro de syscall no PHP | `true` |
+| `jellyfin_privileged: false` | Falha na transcodificação por hardware | `true` |
+| `jellyfin_media_readonly: true` | Metadados não são gravados junto à mídia | `false` |
+| `media_bind_address: 127.0.0.1` | Cliente de música na rede local não conecta | `0.0.0.0` |
+| `filebrowser_bind_address: 127.0.0.1` | FileBrowser inacessível na rede local | `0.0.0.0` |
+| `pelican_privileged: false` | Painel não inicializa | `true` |
+| `pelican_seccomp_unconfined: false` | Erro de chamada de sistema no PHP | `true` |
 | `ttyd_bind_interface: lo` | `ssh.<domínio>` inacessível | `""` |
-| `pelican_trusted_proxies` | Painel vê IP errado | `"*"` |
+| `pelican_trusted_proxies` | Painel registra endereço de origem incorreto | `"*"` |
 
 ---
 
-## 5. Mudanças de segurança
+## 6. Postura de segurança
 
-| Antes | Agora | Impacto |
+### 6.1 Alterações aplicadas
+
+| Estado anterior | Estado atual | Severidade |
 |---|---|---|
-| Senhas no compose, versionadas | `ansible-vault` + templates | Crítico |
-| `ttyd` em `0.0.0.0` com login root | `-i lo`, só via Access | Crítico |
-| `privileged: true` em dois containers | `group_add` + devices | Crítico |
-| `no-new-privileges:false` | `:true` | Alto |
-| `TRUSTED_PROXIES=*` | Faixas do Cloudflare | Alto |
-| `cloudflared` como root | Usuário próprio + hardening systemd | Alto |
-| `disable_gpg_check: true` | Chave GPG importada | Alto |
-| `accept_hostkey: true` (TOFU cego) | Chave do GitHub fixada | Médio |
-| Sem hardening de SSH | Sem root, sem senha, MaxAuthTries 3 | Alto |
-| Chave SFTP do Wings em `0777` | `0600 root:root` | Crítico |
-| Firewall só no host, fora do Git | Role declarativa | Alto |
-| Redis sem senha | `--requirepass` do vault | Médio |
-| Navidrome/Picard em `0.0.0.0` | `127.0.0.1` | Alto |
-| Jellyfin com escrita em 1,8 TB | Montado `:ro` | Médio |
+| Senhas em texto claro no compose versionado | `ansible-vault` e templates | Crítica |
+| `ttyd` em `0.0.0.0` com sessão de root | `-i lo`, acesso mediado pelo Access | Crítica |
+| `privileged: true` em dois containers | `group_add` e mapeamento de devices | Crítica |
+| `no-new-privileges:false` | `:true` | Alta |
+| `TRUSTED_PROXIES=*` | Faixas oficiais da Cloudflare | Alta |
+| `cloudflared` executando como root | Usuário de serviço dedicado | Alta |
+| `disable_gpg_check: true` | Chave GPG importada e fingerprint fixada | Alta |
+| `accept_hostkey: true` (confiança na primeira conexão) | Chave do GitHub declarada previamente | Média |
+| Ausência de endurecimento de SSH | Sem root, sem senha, `MaxAuthTries 3` | Alta |
+| Chave SFTP do Wings com modo `0777` | `0600 root:root` | Crítica |
+| Firewall configurado apenas no host, fora do versionamento | Role declarativa | Alta |
+| Redis sem autenticação | `--requirepass` proveniente do vault | Média |
+| Navidrome e Picard em `0.0.0.0` | `127.0.0.1` | Alta |
+| Jellyfin com permissão de escrita sobre 1,8 TB | Montagem `:ro` | Média |
 
----
+### 6.2 Verificação de integridade dos binários
 
-## 6. Bugs encontrados e corrigidos
+Os binários de `ttyd`, `playit` e `wings` são obtidos do GitHub com
+verificação de SHA-256. O módulo `get_url` interrompe a execução caso a soma
+não corresponda, o que constitui defesa contra comprometimento da cadeia de
+suprimento.
 
-Diagnosticados por auditoria do host em execução, não por leitura de código.
-
-**`playit.service` — três defeitos numa unit de 20 linhas**
-```ini
-StartLimitIntervalSec:60      # dois-pontos: systemd descartava a linha inteira
-Restart=always                # ...
-Restart=on-failure            # declarado duas vezes; a segunda vencia calada
-```
-Além de `StartLimitIntervalSec` estar em `[Service]`, quando pertence a
-`[Unit]`. O systemd registrava tudo isso em **todo boot**, no `dmesg`, e
-ninguém lia.
-
-**nginx — dois `server_name` idênticos**
-`painel.conf` e `pelican.conf` declaravam o mesmo host. O nginx descartava um
-e avisava `conflicting server name`. Qual sobrevivia dependia da ordem
-alfabética do glob — comportamento acidental que ninguém escolheu.
-
-**`BEGIND_PROXY` — erro de digitação que não gera erro**
-Deveria ser `BEHIND_PROXY`. Como o nome não correspondia a nada, era
-ignorado, e o painel nunca soube que estava atrás de um proxy. Bugs assim não
-falham: produzem comportamento silenciosamente errado.
-
-**`changed_when` lendo o stream errado**
-`docker compose up` escreve progresso em **stderr**. A verificação lia
-`stdout`, então a task nunca reportava `changed` — nem criando containers do
-zero.
-
-**`dnf autoremove` disfarçado de leitura**
-Marcado com `changed_when: false`. Removia pacotes em produção enquanto o
-relatório dizia "ok".
-
-**`container_execmem` — boolean que não existe mais**
-Removido na política 42.x do AlmaLinux 10. O playbook antigo tentaria aplicá-lo
-e falharia. Booleans do SELinux dependem da versão da política; não são API
-estável.
-
-**Duas cópias do `cloudflared`**
-Uma do RPM em `/usr/bin`, outra manual em `/usr/local/bin`. A unit apontava
-para a manual — então `dnf update` atualizava um binário que não era o que
-rodava, e o serviço ficou preso numa versão antiga indefinidamente.
-
-**`secure_path` sem `/usr/local/bin`**
-Durante a auditoria, `sudo command -v ttyd` dizia "não encontrado" com o
-serviço rodando. Os binários existiam; não estavam no PATH do sudo. Quase
-tirei a conclusão errada.
-
-**FileBrowser — UID fixo da imagem, não derivado do host**
-Diferente do Jellyfin (que aceita qualquer GID via `group_add`), a imagem
-`filebrowser/filebrowser` roda com um UID/GID **fixos** seus (1000:1000,
-`user` dentro da própria imagem — confirmado com
-`docker run --entrypoint '' filebrowser/filebrowser id`). A primeira versão
-da role forçava `--user {{ app_uid }}:{{ app_gid }}` para casar com o dono
-dos diretórios no host. Em produção isso funciona por coincidência
-(`app_uid` também é 1000 lá); no laboratório, onde `app_uid` é 1001, quebrou
-com `cp: can't create '/config/settings.json': Permission denied` — o
-processo perdia acesso ao `/config` que a própria imagem já é dona. Correção:
-os diretórios montados (`database/` e a raiz de upload) ficam com dono
-numérico `1000:1000` fixo em todo host, e nem o compose nem a inicialização
-usam `{{ app_uid }}` para este serviço específico.
-
-**`capas.<domínio>` servia um desktop gráfico sem autenticação nenhuma**
-Medido de fora durante a convergência de produção de 12/09/2026: enquanto
-`jellyfin`, `music` e `painel` respondiam `302` (redirect para o login do
-Cloudflare Access), `capas` respondia `200` — chegava direto na origem, sem
-Access na frente. E o que havia na origem era a interface noVNC do Picard, que
-a imagem entrega com `WEB_AUTHENTICATION=0` e `VNC_PASSWORD` vazio: sessão
-gráfica interativa, sem senha, com escrita sobre a biblioteca de música
-inteira. A rota existia em `cloudflare_ingress` desde antes deste repositório,
-e o bind local em `127.0.0.1` aplicado na mesma convergência fechou só a LAN —
-o caminho pelo túnel seguia aberto. O Picard foi **removido** (usado uma vez,
-fora da suíte): remover é melhor que proteger o que não se usa.
-*Lição: o inventário de rotas do túnel precisa ser revisado junto com o
-inventário de serviços. Uma rota que ficou para trás não some do mapa de
-exposição — só sai do seu radar.*
-
-**`services.yml` não tolera o `cloudflared` pulado no laboratório**
-`diag.yml` já tem uma exceção documentada para `cloudflared inactive` no
-laboratório (túnel próprio ainda pendente — seção 8). `services.yml` não
-tem: a task `Serviços systemd ativos e habilitados` falha a play inteira com
-"Could not find the requested service" quando a unit não existe, porque
-`--skip-tags cloudflared` no `setup.yml` nunca chega a criar essa unit.
-Achado validando a stack do FileBrowser no laboratório em 12/09/2026; ainda
-não corrigido — ver seção 8.
-
----
-
-## 7. Incidente de credenciais
-
-Uma auditoria do histórico Git encontrou um **token de API da Cloudflare
-ativo** e as credenciais do túnel commitadas ao longo de todo o histórico,
-além de senhas de MariaDB em texto claro.
-
-**Causa raiz:** o `deploy.sh` original fazia `git add .` cego antes de cada
-execução. Qualquer arquivo que caísse no diretório entrava no commit.
-
-**Resposta:**
-1. Reescrita do histórico com `git filter-repo`
-2. Rotação do token da Cloudflare
-3. `deploy.sh` reescrito: `git add -u` (só arquivos já rastreados) e varredura
-   com `gitleaks` antes de commitar
-4. `.gitignore` cobrindo `vault.yml`, `*.pem`, `*.json` de credencial
-5. Migração de todos os segredos para `ansible-vault`
-
-**Pendente:** as senhas do MariaDB continuam no histórico público. Trocá-las
-no vault não basta — o banco já existe com a senha antiga e exige `ALTER USER`.
-O procedimento está na seção 9.
-
-Registro isto porque a resposta a incidente é parte do trabalho, e um
-portfólio que só mostra o caminho feliz não diz nada sobre como a pessoa
-reage quando algo dá errado.
-
----
-
-## 8. Dívidas conhecidas
-
-Aberto, não esquecido.
-
-| Item | Por que ainda não foi resolvido |
-|---|---|
-| Jellyfin com `label:disable` | Precisa de política SELinux própria, como a do ttyd. O boolean que resolvia foi removido na política 42.x. |
-| MariaDB 10.5 (sem suporte desde jun/2025) | Subir para 11.x LTS é **migração de dados**, não convergência de config. Exige backup e janela. |
-| `NOPASSWD:ALL` para o usuário da aplicação | O `deploy.sh` roda desatendido. Separar usuário de automação do de aplicação é mudança de processo. |
-| `Caddyfile` do Pelican não gerenciado | O arquivo original do host não foi capturado na auditoria. Sobrescrever com um deduzido é risco desnecessário. |
-| Sem `update.yml` agendado | A auditoria achou 26 versões de kernel e correções *Important* de OpenSSH e nginx pendentes. Falta um `systemd timer`. |
-| Sem monitoramento nem alerta | Próxima fase: Prometheus + node_exporter. |
-| Sem rotina de backup testada | Existem dados em `/mnt/cloud`, mas sem restauração verificada não é backup. |
-| `APP_URL` do painel fixo no compose | Contraria a regra de zero valor fixo fora de `group_vars` e impede testar o painel em qualquer nome que não seja o de produção — o Laravel gera URL absoluta e redireciona para lá. Vira variável quando o laboratório precisar do painel de verdade. |
-| Chave de deploy do site não é gerenciada | O `setup.yml` já clona o site, mas a chave SSH privada do `app_user` é segredo que não está no vault nem no repositório. Hoje a task avisa e pula quando ela falta; automatizar exige decidir onde guardar mais um segredo. |
-| `services.yml` falha inteiro se `cloudflared` for pulado no lab | A task de serviços systemd não tem `failed_when: false`/exceção como o `diag.yml` já tem para este caso conhecido. Corrigir exige decidir se a exceção é só para o grupo `lab` ou geral — não decidi sozinho, ver README seção 6. |
-| **`files.<domínio>` está SEM política de Cloudflare Access** | Medido em 12/09/2026: `jellyfin`, `music` e `painel` respondem `302` (redirect para o login do Access); `files` responde direto da origem. O registro DNS sobreviveu do FileBrowser antigo, então o hostname já resolve e já chega ao servidor — falta só a política. **Enquanto ela não existir, o container do FileBrowser não deve subir**: é um gerenciador de arquivos com permissão de upload e exclusão, e a única barreira seria o login dele próprio. A política em si não é IaC neste repositório (mesma situação dos outros hostnames): é configurada no Zero Trust, à mão. |
-
----
-
-## 9. Rotação de segredos
-
-As senhas antigas estão no histórico público. Trocar no vault não basta.
-
-```bash
-# 1. Backup ANTES de qualquer coisa
-docker compose -f ~/docker/pelican-panel/docker-compose.yml stop
-sudo tar czf ~/pelican-db-$(date +%F).tar.gz ~/docker/pelican-panel/var/lib/mysql
-
-# 2. Suba só o banco e troque as senhas
-docker compose up -d database
-docker exec -it pelican-panel-database-1 mysql -uroot -p'SENHA_ANTIGA' -e "
-  ALTER USER 'pelican'@'%' IDENTIFIED BY 'NOVA_SENHA';
-  ALTER USER 'root'@'localhost' IDENTIFIED BY 'NOVA_ROOT';
-  FLUSH PRIVILEGES;"
-
-# 3. Grave as novas no vault e reaplique
-ansible-vault edit group_vars/all/vault.yml
-ansible-playbook playbooks/setup.yml --limit prod --tags gameserver --ask-vault-pass
-ansible-playbook playbooks/services.yml --limit prod
-```
-
----
-
-## 10. Verificação de binários
-
-`ttyd`, `playit` e `wings` são baixados do GitHub com **verificação SHA-256**.
-O `get_url` aborta se o arquivo não bater — defesa contra comprometimento de
-supply chain.
-
-| Binário | Versão | SHA-256 (início) |
+| Binário | Versão | SHA-256 (prefixo) |
 |---|---|---|
 | ttyd | 1.7.7 | `8a217c968aba172e…` |
 | playit | v1.0.5 | `217bd341b3ea88f9…` |
 | wings | v1.0.0-beta25 | `4fb1f8302cb4458d…` |
 
-Verificados contra o host em 08/09/2026: os três conferem, então o `get_url`
-não baixa nada — a task é no-op.
+Conferidos contra o host em 08/09/2026. Uma vez que os arquivos locais
+correspondem às somas esperadas, o `get_url` não realiza download e a task
+comporta-se como no-op.
 
-Ao trocar de versão, recalcule (no shell, com a versão **literal** — `{{ }}`
-é sintaxe do Ansible e o shell não expande):
+Ao alterar a versão, a soma deve ser recalculada no shell, com a versão
+literal — `{{ }}` é sintaxe do Ansible e não é expandida pelo shell:
 
 ```bash
 curl -sL https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64 | sha256sum
@@ -446,47 +313,251 @@ curl -sL https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64 | s
 
 ---
 
+## 7. Defeitos identificados e corrigidos
+
+Os itens a seguir foram detectados por auditoria do host em execução e por
+validação em ambiente de laboratório, não por leitura isolada do código.
+
+**`playit.service` — três defeitos em uma unit de vinte linhas**
+
+```ini
+StartLimitIntervalSec:60      # dois-pontos: a linha era integralmente descartada
+Restart=always                # ...
+Restart=on-failure            # declarado duas vezes; a segunda declaração prevalecia
+```
+
+Além disso, `StartLimitIntervalSec` figurava em `[Service]`, quando pertence a
+`[Unit]`. O systemd registrava as três ocorrências a cada inicialização, sem
+que o registro fosse consultado.
+
+**nginx — dois `server_name` idênticos**
+
+Os arquivos `painel.conf` e `pelican.conf` declaravam o mesmo host. O nginx
+descartava um deles e emitia `conflicting server name`. A escolha do
+sobrevivente dependia da ordem alfabética de expansão do glob, caracterizando
+comportamento acidental.
+
+**`BEGIND_PROXY` — erro de digitação que não produz erro**
+
+A variável correta é `BEHIND_PROXY`. Como o identificador grafado não
+correspondia a nenhuma variável esperada pela aplicação, era ignorado, e o
+painel permanecia sem conhecimento de operar atrás de um proxy. Defeitos dessa
+natureza não falham: produzem comportamento silenciosamente incorreto.
+
+**`changed_when` avaliando o fluxo incorreto**
+
+O comando `docker compose up` escreve o progresso em **stderr**. A verificação
+examinava `stdout`, de modo que a task nunca reportava `changed`, mesmo ao
+criar containers do zero.
+
+**`dnf autoremove` classificado como operação de leitura**
+
+A task apresentava `changed_when: false`, o que fazia com que a remoção de
+pacotes em produção fosse reportada como ausência de alteração.
+
+**`container_execmem` — boolean inexistente na política vigente**
+
+Removido na política 42.x do AlmaLinux 10. Sua aplicação resultaria em falha.
+Booleans do SELinux dependem da versão da política e não constituem interface
+estável.
+
+**Duas instâncias do binário `cloudflared`**
+
+Uma proveniente do RPM, em `/usr/bin`, e outra instalada manualmente em
+`/usr/local/bin`. A unit referenciava a segunda, de modo que as atualizações
+via `dnf` incidiam sobre um binário que não era o executado, mantendo o
+serviço indefinidamente em versão antiga.
+
+**`secure_path` sem `/usr/local/bin`**
+
+Durante a auditoria, `sudo command -v ttyd` reportava ausência do binário com
+o serviço em execução. Os binários existiam, mas não constavam do PATH
+utilizado pelo sudo — situação que induziu a conclusão inicial equivocada.
+
+**FileBrowser — identificador de usuário fixo na imagem**
+
+Diferentemente do Jellyfin, que aceita qualquer GID por meio de `group_add`, a
+imagem `filebrowser/filebrowser` executa com UID e GID fixos (1000:1000),
+verificáveis por `docker run --entrypoint '' filebrowser/filebrowser id`. A
+primeira versão da role forçava `--user {{ app_uid }}:{{ app_gid }}` para
+compatibilizar com o proprietário dos diretórios no host. Em produção o
+procedimento funciona por coincidência, pois `app_uid` também equivale a 1000;
+no laboratório, onde corresponde a 1001, a inicialização falhou com
+`cp: can't create '/config/settings.json': Permission denied`, uma vez que o
+processo perdia acesso ao diretório de que a própria imagem é proprietária.
+Adotou-se, como correção, a atribuição do proprietário numérico `1000:1000` aos
+diretórios montados, independentemente do host.
+
+**`capas.<domínio>` expunha sessão gráfica sem autenticação**
+
+Medição externa conduzida durante a convergência de produção de 12/09/2026
+constatou que `jellyfin`, `music` e `painel` respondiam `302` — redirecionamento
+para a autenticação do Cloudflare Access —, enquanto `capas` respondia `200`,
+alcançando diretamente a origem. O conteúdo servido era a interface noVNC do
+Picard, distribuída pela imagem com `WEB_AUTHENTICATION=0` e `VNC_PASSWORD`
+vazio: sessão gráfica interativa, desprovida de autenticação, com permissão de
+escrita sobre a totalidade da biblioteca de música.
+
+A rota constava de `cloudflare_ingress` desde antes da criação deste
+repositório. A vinculação do serviço a `127.0.0.1`, aplicada na mesma
+convergência, restringiu apenas o acesso pela rede local; o caminho através do
+túnel permanecia aberto. Optou-se pela remoção do serviço, e não por sua
+proteção, dado que se encontrava em desuso.
+
+*Lição derivada: o inventário de rotas do túnel deve ser revisado
+conjuntamente com o inventário de serviços. Uma rota remanescente não
+desaparece do mapa de exposição — apenas deixa de ser observada.*
+
+**Exposição de segredos pela saída do playbook**
+
+O `ansible.cfg` do projeto habilita `diff` por padrão, decisão adequada para
+revisão de alterações. Constatou-se, porém, que a aplicação de `--diff` sobre
+um `template:` imprime o arquivo renderizado integralmente — incluindo, no caso
+do compose do Pelican, três senhas provenientes do vault. O `ansible-vault`
+protege o segredo em repouso, no versionamento; não protege sua transmissão
+pela saída do playbook. A proteção correspondente é `no_log: true`, declarada
+explicitamente em cada task que renderize segredo.
+
+---
+
+## 8. Incidente de credenciais
+
+Auditoria do histórico de versionamento identificou um token de API da
+Cloudflare ativo, credenciais do túnel e senhas de MariaDB em texto claro,
+presentes ao longo de todo o histórico.
+
+**Causa raiz.** O `deploy.sh` original executava `git add .` de forma
+indiscriminada antes de cada execução, de modo que qualquer arquivo presente
+no diretório era incorporado ao commit.
+
+**Medidas adotadas.**
+
+1. Reescrita do histórico com `git filter-repo`.
+2. Rotação do token da Cloudflare.
+3. Reescrita do `deploy.sh`, que passou a utilizar `git add -u` — restrito a
+   arquivos já rastreados — e a executar varredura com `gitleaks` previamente
+   ao commit.
+4. Ampliação do `.gitignore` para `vault.yml`, `*.pem` e arquivos de
+   credencial em formato JSON.
+5. Migração integral dos segredos para `ansible-vault`.
+
+**Rotação das senhas de banco.** As credenciais do MariaDB foram rotacionadas
+em 12/09/2026, conforme o procedimento da seção 10. Registram-se dois achados
+não evidentes: a senha anterior do usuário `root` não coincidia com a do
+usuário da aplicação, e existiam **duas** contas de root (`root@localhost` e
+`root@%`), de modo que a rotação de apenas uma delas preservaria uma conta
+privilegiada com credencial comprometida.
+
+---
+
+## 9. Limitações conhecidas
+
+| Item | Justificativa da pendência |
+|---|---|
+| Jellyfin com `label:disable` | Requer política SELinux própria, nos moldes da adotada para o ttyd. O boolean que resolvia a questão foi removido na política 42.x. |
+| MariaDB 10.5, sem suporte desde jun/2025 | A migração para 11.x LTS constitui migração de dados, não convergência de configuração. Exige backup e janela de manutenção. |
+| `NOPASSWD:ALL` para o usuário da aplicação | O `deploy.sh` executa de forma desatendida. A segregação entre usuário de automação e de aplicação configura mudança de processo. |
+| `Caddyfile` do Pelican não gerenciado | O conteúdo original do host não foi capturado na auditoria inicial. Substituí-lo por versão deduzida representaria risco desnecessário. |
+| Ausência de agendamento do `update.yml` | A auditoria identificou 26 versões de kernel e correções classificadas como *Important* pendentes. Falta um `systemd timer`. |
+| Configuração do painel Pelican em volume anônimo | O arquivo `.env`, que contém a `APP_KEY`, reside em volume Docker anônimo. Um `docker compose down -v` o destruiria de forma irrecuperável, inutilizando os valores cifrados no banco. A correção consiste em migrar para bind mount explícito. |
+| Ausência de rotina de backup verificada | Existem dados em `/mnt/cloud`, porém, sem restauração testada, não se caracteriza backup. |
+| `APP_URL` do painel fixo no compose | Contraria a regra de ausência de valores literais fora de `group_vars` e impede o teste do painel sob qualquer nome distinto do de produção, dado que o Laravel gera URLs absolutas. |
+| Chave de deploy do site não gerenciada | A chave privada do `app_user` não consta do vault nem do repositório. A task emite aviso e é omitida quando ausente; automatizá-la exige decidir o local de custódia de mais um segredo. |
+| `services.yml` falha integralmente quando `cloudflared` é omitido no laboratório | A task de serviços systemd não dispõe da exceção que o `diag.yml` já implementa para esse caso conhecido. |
+| Idempotência de `var/lib/mysql` | A role atribui `1000:1000` ao diretório, enquanto o entrypoint da imagem o reatribui a 999 a cada inicialização. A task reporta `changed` permanentemente, o que compromete o critério de verificação adotado no projeto. |
+| Avisos de depreciação do ansible-core | `DEFAULT_MANAGED_STR` e `INJECT_FACTS_AS_VARS` serão removidos nas versões 2.23 e 2.24, respectivamente. A migração para `ansible_facts[...]` está pendente. |
+| `files.<domínio>` sem política de Cloudflare Access | Medição de 12/09/2026: o hostname alcança a origem sem autenticação de borda. Trata-se de serviço com permissão de escrita e exclusão, cuja única barreira seria a autenticação própria. A política é configurada no Zero Trust, fora deste repositório. |
+
+---
+
+## 10. Rotação de segredos
+
+Credenciais expostas no histórico exigem rotação efetiva; a substituição do
+valor no vault é insuficiente, pois não altera contas já existentes no banco.
+
+```bash
+# 1. Backup previamente a qualquer alteração
+docker compose -f ~/docker/pelican-panel/docker-compose.yml stop
+sudo tar czf ~/pelican-db-$(date +%F).tar.gz ~/docker/pelican-panel/var/lib/mysql
+
+# 2. Enumerar as contas existentes antes de decidir o que alterar
+#    (no MariaDB 10.4+ a tabela é global_priv; mysql.user é view)
+docker exec pelican-panel-database-1 \
+  mysql -uroot -p'SENHA_ANTIGA' -N -e \
+  "SELECT CONCAT(user,0x40,host) FROM mysql.global_priv;"
+
+# 3. Aplicar a rotação a todas as contas pertinentes
+docker exec -it pelican-panel-database-1 mysql -uroot -p'SENHA_ANTIGA' -e "
+  ALTER USER 'pelican'@'%'        IDENTIFIED BY 'NOVA_SENHA';
+  ALTER USER 'root'@'localhost'   IDENTIFIED BY 'NOVA_ROOT';
+  ALTER USER 'root'@'%'           IDENTIFIED BY 'NOVA_ROOT';
+  FLUSH PRIVILEGES;"
+
+# 4. Registrar os novos valores no vault e reaplicar
+ansible-vault edit group_vars/all/vault.yml
+ansible-playbook playbooks/setup.yml --limit prod --tags gameserver --ask-vault-pass
+ansible-playbook playbooks/services.yml --limit prod --ask-vault-pass
+```
+
+Observa-se que, entre a etapa 3 e a recriação dos containers, a aplicação
+permanece com a credencial anterior em memória e não estabelece novas conexões
+com o banco. As duas etapas devem, portanto, ser executadas em sequência
+imediata.
+
+---
+
 ## 11. Roteiro de validação
 
-Antes de aplicar em produção, valide no clone virtual:
+A aplicação em produção é precedida de validação no clone virtual:
 
-1. `--check --diff` — leia cada mudança proposta
-2. Aplique e confira o relatório de verificação no final
-3. Rode de novo → deve dar `changed=0`
-4. `services.yml`, depois `diag.yml` sem falhas
-5. Reinicie a VM → rode `diag.yml` de novo; tudo deve subir sozinho
-6. **Teste destrutivo:** reinstale o SO na VM e rode `setup.yml` +
-   `services.yml`. É o cenário real que o projeto promete suportar.
+1. Executar com `--check --diff` e examinar cada alteração proposta.
+2. Aplicar e examinar o relatório de verificação emitido ao final.
+3. Repetir a execução; espera-se `changed=0`.
+4. Executar `services.yml` e, em seguida, `diag.yml`, sem falhas.
+5. Reinicializar a máquina e executar `diag.yml` novamente; todos os serviços
+   devem restabelecer-se automaticamente.
+6. **Teste destrutivo:** reinstalar o sistema operacional na máquina virtual e
+   executar `setup.yml` seguido de `services.yml`, reproduzindo o cenário que o
+   projeto se propõe a suportar.
 
-Só então `--limit prod`.
+Somente após a conclusão dessas etapas aplica-se `--limit prod`.
+
+---
+
+## 12. Observabilidade
+
+A camada de observabilidade encontra-se em fase de planejamento; a arquitetura
+acordada está descrita em [`MONITORAMENTO.md`](MONITORAMENTO.md).
+
+A decisão estruturante consiste em não hospedar a stack de monitoramento no
+host monitorado. Uma instalação local de Prometheus e Alertmanager falharia
+precisamente no cenário de maior relevância — a indisponibilidade do host —,
+uma vez que o componente responsável pela notificação cessaria junto com o
+objeto observado. Adota-se, por conseguinte, um agente de coleta local
+(Grafana Alloy) que transmite as amostras, por conexão de saída, a um backend
+externo responsável pelo armazenamento, pela avaliação das regras e pela
+notificação.
 
 ---
 
 ## Licença
 
-MIT — ver [LICENSE](LICENSE).
+Distribuído sob a licença MIT. Ver [LICENSE](LICENSE).
 
 ---
 
-## Transparência sobre o uso de IA
+## Nota metodológica sobre o uso de ferramentas de IA
 
-Este projeto foi desenvolvido **com auxílio do Claude Opus 5 (Anthropic)**,
-usado como ferramenta para acelerar o processo de aprendizado.
+O desenvolvimento deste repositório contou com assistência de modelos de
+linguagem (Claude, Anthropic), empregados em revisão de código, redação de
+documentação, explicação de conceitos de SELinux e systemd e proposição de
+estruturas de código.
 
-O que isso significa na prática:
+A arquitetura, as decisões de projeto e o ambiente são de responsabilidade do
+mantenedor. Toda saída produzida com assistência foi verificada contra o host
+em execução; parte dela mostrou-se incorreta e foi corrigida no processo,
+incluindo defeitos introduzidos pela própria ferramenta e identificados em
+revisão subsequente.
 
-- **A arquitetura, as decisões e o ambiente são meus.** O servidor, os
-  serviços, os problemas encontrados e o que fazer com eles partiram de mim.
-- **A IA foi usada como par de revisão e acelerador de estudo:** revisar
-  código em busca de bugs, explicar conceitos de SELinux e systemd, redigir
-  documentação e propor estruturas de código.
-- **Tudo foi revisado, testado e validado por mim** contra o host real. Vários
-  achados da IA estavam errados e foram corrigidos no processo — inclusive
-  bugs que ela mesma introduziu e que só apareceram na revisão seguinte.
-- **O objetivo é aprender, não terceirizar.** Cada arquivo tem comentários
-  explicando *por que* a decisão foi tomada, justamente para que este
-  repositório continue sendo material de estudo meu no futuro.
-
-Considero essa transparência parte da disciplina profissional. Ferramentas
-mudam; a capacidade de entender, questionar e validar o resultado é o que
-permanece.
+O registro consta por considerar-se que a origem do código é informação
+pertinente à sua avaliação técnica.
