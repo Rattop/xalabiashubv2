@@ -191,6 +191,34 @@ falha inteiro no laboratório com `cloudflared` pulado, porque a task de
 serviços systemd não tem a mesma tolerância que o `diag.yml` já tem para
 esse caso conhecido.
 
+### ARMADILHA ATIVA em produção (12/09/2026) — leia antes de rodar services.yml
+
+Depois da convergência de produção desta data, o `group_vars/all/vault.yml`
+foi rotacionado, mas **os usuários DENTRO do MariaDB continuam com as senhas
+antigas** — trocar no vault não altera usuário de banco que já existe (é a
+seção 9 do README). Medido no host:
+
+```
+usuario pelican : AUTH_FALHOU
+usuario root    : AUTH_FALHOU
+```
+
+O painel só continua funcionando porque os containers rodam desde antes, com
+as variáveis antigas em memória. **`services.yml` roda `docker compose up -d`
+em todas as stacks** — no instante em que recriar o `pelican-panel`, o Laravel
+passa a apresentar a senha nova para um banco que espera a antiga, e o painel
+para de conectar.
+
+Ordem correta: `ALTER USER` no MariaDB primeiro (README seção 9), depois
+`setup.yml --tags gameserver` para reescrever o compose com os valores atuais,
+e só então `services.yml`.
+
+O mesmo vale para o FileBrowser por outro motivo: o `creates:` da task de
+inicialização impede que ela rode de novo, então rotacionar no vault não muda
+a senha de um `filebrowser.db` que já existe. Para rotacionar de verdade,
+apague o `filebrowser.db` (só quando ele ainda não tiver usuários/dados) e
+rode `--tags filemanager`.
+
 **Nota de segurança:** a senha gerada para `vault_filebrowser_admin_password`
 apareceu em texto claro no terminal do usuário durante o diagnóstico de um
 erro (campo `cmd` de uma falha do Ansible) e ficou registrada na sessão de
