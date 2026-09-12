@@ -387,6 +387,39 @@ seção inteira no README sobre o custo de trocar erro visível por silêncio.
 | `diag.yml` | limpo: 7/7 serviços ativos, sem falha |
 | `update.yml` | em execução; ver resultado antes de confiar |
 
+## Próxima fase: observabilidade (planejada, não implementada)
+
+O plano completo está em `MONITORAMENTO.md`, na raiz — documento provisório
+que será desmontado quando a role existir. O essencial para não refazer a
+discussão:
+
+- **Decisão de arquitetura, e o motivo dela:** o alertador NÃO pode viver no
+  host que ele monitora, senão morre junto no único cenário que realmente
+  importa. Por isso não haverá Prometheus nem Alertmanager local: só o agente
+  **Grafana Alloy** no host, empurrando métricas por `remote_write` para a
+  **Grafana Cloud**, que hospeda armazenamento, regras e notificação.
+- **Canal de alerta: ntfy.** Telegram foi descartado por preferência do
+  usuário; WhatsApp oficial exige template aprovado pela Meta para mensagem
+  proativa, o que não serve para alerta.
+- **Dois segredos, ambos no vault:** `vault_grafana_cloud_token` e
+  `vault_ntfy_topic`. O nome do tópico do ntfy **é** a credencial — quem o
+  conhece publica e lê. Não versionar.
+- **A task do template nasce com `no_log: true`.** Não é zelo abstrato: foi
+  exatamente assim que três senhas de banco vazaram no terminal em
+  12/09/2026.
+- **Logs não vão para a nuvem nesta fase**, pelo mesmo motivo acima. Se um dia
+  forem, que seja por unidade selecionada, nunca o journal inteiro.
+- **Fronteira de gerência:** o Ansible instala e configura o agente. Regras de
+  alerta, contact points e dashboards ficam na interface da Grafana Cloud —
+  mesma convenção já aplicada às políticas de Cloudflare Access.
+- **Cardinalidade é o risco do free tier** (10k séries): descartar rótulos
+  por núcleo de CPU e por dispositivo de bloco do cAdvisor, e observar o
+  crescimento causado pelos containers de jogo, que têm nome UUID e são
+  criados e destruídos pelo Wings.
+
+Antes de implementar, o usuário precisa fornecer a URL do endpoint e o
+instance ID da Grafana Cloud (não sensíveis) e registrar o token no vault.
+
 ## Como investigar um erro (método obrigatório, não sugestão)
 
 Este projeto foi construído inteiro com esse método, e ele já pagou o
