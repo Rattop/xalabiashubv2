@@ -191,33 +191,43 @@ falha inteiro no laboratório com `cloudflared` pulado, porque a task de
 serviços systemd não tem a mesma tolerância que o `diag.yml` já tem para
 esse caso conhecido.
 
-### ARMADILHA ATIVA em produção (12/09/2026) — leia antes de rodar services.yml
+### Rotação de senha do MariaDB — RESOLVIDA em 12/09/2026 (a lição fica)
 
-Depois da convergência de produção desta data, o `group_vars/all/vault.yml`
-foi rotacionado, mas **os usuários DENTRO do MariaDB continuam com as senhas
-antigas** — trocar no vault não altera usuário de banco que já existe (é a
-seção 9 do README). Medido no host:
+Situação encontrada logo depois da convergência de produção desta data: o
+`group_vars/all/vault.yml` tinha sido rotacionado, mas **os usuários DENTRO do
+MariaDB continuavam com as senhas antigas** — trocar no vault não altera
+usuário de banco que já existe (README, seção 9). Medido no host na hora:
+`AUTH_FALHOU` tanto para `pelican` quanto para `root`.
 
-```
-usuario pelican : AUTH_FALHOU
-usuario root    : AUTH_FALHOU
-```
+O detalhe perigoso: o painel *parecia* saudável, porque os containers rodavam
+desde antes com as variáveis antigas em memória. Como o `services.yml` roda
+`docker compose up -d` em todas as stacks, rodá-lo naquele estado teria
+recriado o `pelican-panel` com a senha nova contra um banco que esperava a
+antiga — derrubando o painel sem nenhum aviso prévio.
 
-O painel só continua funcionando porque os containers rodam desde antes, com
-as variáveis antigas em memória. **`services.yml` roda `docker compose up -d`
-em todas as stacks** — no instante em que recriar o `pelican-panel`, o Laravel
-passa a apresentar a senha nova para um banco que espera a antiga, e o painel
-para de conectar.
+Duas coisas que só apareceram ao verificar em vez de assumir:
 
-Ordem correta: `ALTER USER` no MariaDB primeiro (README seção 9), depois
-`setup.yml --tags gameserver` para reescrever o compose com os valores atuais,
-e só então `services.yml`.
+1. A senha antiga do root **não** era a mesma do usuário `pelican`. Um
+   `ALTER USER` autenticando com a senha errada falha no login e não muda nada.
+2. Existem **dois** root (`root@localhost` E `root@%`), além de
+   `pelican@%`. Rotacionar só o `@localhost` deixaria uma conta root viva
+   aceitando a senha comprometida. Liste as contas antes:
+   `SELECT CONCAT(user,0x40,host) FROM mysql.global_priv;` — no MariaDB 10.4+
+   a tabela é `global_priv`; `mysql.user` é view e pode nem existir.
 
-O mesmo vale para o FileBrowser por outro motivo: o `creates:` da task de
+Ordem que funcionou, e que vale repetir na próxima rotação:
+`setup.yml --tags gameserver` (reescreve o compose a partir do vault) →
+`ALTER USER` nas três contas, lendo as senhas novas do próprio compose
+renderizado (assim nada é digitado nem colado) → `docker compose up -d` na
+stack do painel para fechar a janela em que o app ainda usa a credencial
+velha → conferir com `AUTH_OK`/`AUTH_FALHOU` e confirmar que a senha antiga
+passou a ser **rejeitada**.
+
+PENDENTE do mesmo assunto: o FileBrowser. O `creates:` da task de
 inicialização impede que ela rode de novo, então rotacionar no vault não muda
 a senha de um `filebrowser.db` que já existe. Para rotacionar de verdade,
-apague o `filebrowser.db` (só quando ele ainda não tiver usuários/dados) e
-rode `--tags filemanager`.
+apague o `filebrowser.db` (só enquanto ele não tiver usuários/dados) e rode
+`--tags filemanager`.
 
 **Nota de segurança:** a senha gerada para `vault_filebrowser_admin_password`
 apareceu em texto claro no terminal do usuário durante o diagnóstico de um
