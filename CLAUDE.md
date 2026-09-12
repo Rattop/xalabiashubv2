@@ -73,14 +73,16 @@ playbooks/services.yml      garante serviços/stacks de pé (pós-reboot)
 playbooks/update.yml        manutenção: pacotes, imagens, limpeza
 playbooks/diag.yml          diagnóstico somente leitura, com asserts reais
 
-roles/common/     usuário, sudo, pacotes, hardening SSH
-roles/storage/    montagem BTRFS cirúrgica (nunca sobrescreve fstab inteiro)
-roles/docker/     engine + plugin compose
-roles/selinux/    booleans de container + política customizada do ttyd
-roles/firewall/   firewalld declarativo
-roles/ingress/    nginx, cloudflared, ttyd
-roles/media/      Jellyfin, Navidrome, Picard
-roles/gameserver/ Pelican Panel, Wings, Playit
+roles/common/      usuário, sudo, pacotes, hardening SSH
+roles/tailscale/   acesso remoto pessoal via tailnet (não expõe porta nenhuma)
+roles/storage/     montagem BTRFS cirúrgica (nunca sobrescreve fstab inteiro)
+roles/docker/      engine + plugin compose
+roles/selinux/     booleans de container + política customizada do ttyd
+roles/firewall/    firewalld declarativo
+roles/ingress/     nginx, cloudflared, ttyd
+roles/media/       Jellyfin, Navidrome, Picard
+roles/gameserver/  Pelican Panel, Wings, Playit
+roles/filemanager/ FileBrowser (upload de arquivos remoto)
 
 Vagrantfile                 VM de laboratório (KVM/libvirt) — ver seção abaixo
 ```
@@ -162,6 +164,38 @@ falhas que o `diag.yml` acusa no laboratório são legítimas e conhecidas:
 `wings activating` — este último sai com `status=1` em laço de
 `auto-restart` porque `/etc/pelican/config.yml` não existe, que é a mesma
 limitação descrita no parágrafo acima, agora com o sintoma exato anotado.
+
+### Rodada de 12/09/2026 — FileBrowser (`filemanager`) e Tailscale
+
+Validado no laboratório, `--limit lab --tags filemanager,tailscale`:
+`setup.yml` deu `changed=0` na segunda passada, o container do FileBrowser
+subiu saudável (`HTTP 200`, login `admin/admin` da imagem rejeitado com
+`403` — confirma que a senha veio do vault), e o `tailscale up` conectou o
+host ao tailnet do usuário sem precisar de link de aprovação (conta com
+aprovação automática de dispositivo). SSH via IP do tailnet testado e
+funcionando a partir de outro host já no mesmo tailnet. `ausearch -m avc`
+sem negações.
+
+Dois bugs reais encontrados e corrigidos nesta rodada — detalhes completos
+em README.md seção 6:
+- FileBrowser roda com UID/GID fixos da própria imagem (1000:1000), não
+  aceitando `{{ app_uid }}` do host como o Jellyfin aceita. Só não apareceu
+  em produção porque lá `app_uid` também é 1000, por coincidência.
+- A task de inicialização do banco do FileBrowser precisa rodar como root
+  (não `become_user: {{ app_user }}`), porque os diretórios montados são
+  donos do UID acima, não de `{{ app_user }}` — senão o `creates:` não
+  detecta o banco já existente e tenta inicializar de novo.
+
+Achado, não corrigido nesta rodada (ver README seção 8): `services.yml`
+falha inteiro no laboratório com `cloudflared` pulado, porque a task de
+serviços systemd não tem a mesma tolerância que o `diag.yml` já tem para
+esse caso conhecido.
+
+**Nota de segurança:** a senha gerada para `vault_filebrowser_admin_password`
+apareceu em texto claro no terminal do usuário durante o diagnóstico de um
+erro (campo `cmd` de uma falha do Ansible) e ficou registrada na sessão de
+chat usada para esta rodada. Rotacionar (`ansible-vault edit` + reaplicar)
+antes de considerar esta credencial definitiva.
 
 ### Mapa de exposição do laboratório (medido em 12/09/2026)
 

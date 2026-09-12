@@ -51,10 +51,13 @@ de engenharia importa mais que o orçamento.
 │                 ├─► Jellyfin :8096      (vídeo, VAAPI)            │
 │                 ├─► Navidrome :4533     (música)                  │
 │                 ├─► Picard :5800        (metadados)               │
-│                 └─► ttyd :7681          (terminal web)            │
+│                 ├─► ttyd :7681          (terminal web)            │
+│                 └─► FileBrowser :8080   (upload de arquivos)      │
 │                                                                   │
 │   playit ──────────► servidores de jogo (TCP/UDP bruto)           │
 │   wings ───────────► cria/destrói containers de jogo              │
+│   tailscaled ──────► tailnet do usuário (acesso remoto pessoal,   │
+│                       independente do túnel Cloudflare acima)     │
 │                                                                   │
 │   firewalld: só 22 e 2022 abertos para a LAN                      │
 │   SELinux: enforcing, com política customizada para o ttyd        │
@@ -67,7 +70,9 @@ de engenharia importa mais que o orçamento.
 no roteador. O `cloudflared` e o `playit` abrem conexões de **saída** e o
 tráfego volta por elas. Não existe superfície para escanear na internet, e é
 por isso que o firewall pode manter 80, 7681 e 8096 fechados até para a rede
-local — quem os acessa é o túnel, a partir de `localhost`.
+local — quem os acessa é o túnel, a partir de `localhost`. O Tailscale segue
+a mesma lógica: conecta de saída e usa NAT traversal/DERP, sem porta nenhuma
+para redirecionar ou escanear.
 
 ---
 
@@ -91,13 +96,15 @@ local — quem os acessa é o túnel, a partir de `localhost`.
 │
 └── roles/
     ├── common/              Pacotes, usuário, sudo, hardening SSH
+    ├── tailscale/           Acesso remoto pessoal via tailnet
     ├── storage/             Montagem BTRFS via fstab cirúrgico
     ├── selinux/             Booleans + política customizada do ttyd
     ├── firewall/            firewalld declarativo
     ├── docker/              Engine e plugin compose
     ├── ingress/             nginx, cloudflared, ttyd
     ├── media/               Jellyfin, Navidrome, Picard
-    └── gameserver/          Pelican Panel, Wings, Playit
+    ├── gameserver/          Pelican Panel, Wings, Playit
+    └── filemanager/         FileBrowser (upload de arquivos)
 ```
 
 ---
@@ -228,6 +235,7 @@ diagnóstico possível.
 | `jellyfin_privileged: false` | Transcodificação por hardware falha | `true` |
 | `jellyfin_media_readonly: true` | Metadados não salvam junto à mídia | `false` |
 | `media_bind_address: 127.0.0.1` | App de música na LAN não conecta | `0.0.0.0` |
+| `filebrowser_bind_address: 127.0.0.1` | FileBrowser na LAN não conecta | `0.0.0.0` |
 | `pelican_privileged: false` | Painel não sobe | `true` |
 | `pelican_seccomp_unconfined: false` | Erro de syscall no PHP | `true` |
 | `ttyd_bind_interface: lo` | `ssh.<domínio>` inacessível | `""` |
@@ -304,6 +312,29 @@ Durante a auditoria, `sudo command -v ttyd` dizia "não encontrado" com o
 serviço rodando. Os binários existiam; não estavam no PATH do sudo. Quase
 tirei a conclusão errada.
 
+**FileBrowser — UID fixo da imagem, não derivado do host**
+Diferente do Jellyfin (que aceita qualquer GID via `group_add`), a imagem
+`filebrowser/filebrowser` roda com um UID/GID **fixos** seus (1000:1000,
+`user` dentro da própria imagem — confirmado com
+`docker run --entrypoint '' filebrowser/filebrowser id`). A primeira versão
+da role forçava `--user {{ app_uid }}:{{ app_gid }}` para casar com o dono
+dos diretórios no host. Em produção isso funciona por coincidência
+(`app_uid` também é 1000 lá); no laboratório, onde `app_uid` é 1001, quebrou
+com `cp: can't create '/config/settings.json': Permission denied` — o
+processo perdia acesso ao `/config` que a própria imagem já é dona. Correção:
+os diretórios montados (`database/` e a raiz de upload) ficam com dono
+numérico `1000:1000` fixo em todo host, e nem o compose nem a inicialização
+usam `{{ app_uid }}` para este serviço específico.
+
+**`services.yml` não tolera o `cloudflared` pulado no laboratório**
+`diag.yml` já tem uma exceção documentada para `cloudflared inactive` no
+laboratório (túnel próprio ainda pendente — seção 8). `services.yml` não
+tem: a task `Serviços systemd ativos e habilitados` falha a play inteira com
+"Could not find the requested service" quando a unit não existe, porque
+`--skip-tags cloudflared` no `setup.yml` nunca chega a criar essa unit.
+Achado validando a stack do FileBrowser no laboratório em 12/09/2026; ainda
+não corrigido — ver seção 8.
+
 ---
 
 ## 7. Incidente de credenciais
@@ -348,6 +379,8 @@ Aberto, não esquecido.
 | Sem rotina de backup testada | Existem dados em `/mnt/cloud`, mas sem restauração verificada não é backup. |
 | `APP_URL` do painel fixo no compose | Contraria a regra de zero valor fixo fora de `group_vars` e impede testar o painel em qualquer nome que não seja o de produção — o Laravel gera URL absoluta e redireciona para lá. Vira variável quando o laboratório precisar do painel de verdade. |
 | Chave de deploy do site não é gerenciada | O `setup.yml` já clona o site, mas a chave SSH privada do `app_user` é segredo que não está no vault nem no repositório. Hoje a task avisa e pula quando ela falta; automatizar exige decidir onde guardar mais um segredo. |
+| `services.yml` falha inteiro se `cloudflared` for pulado no lab | A task de serviços systemd não tem `failed_when: false`/exceção como o `diag.yml` já tem para este caso conhecido. Corrigir exige decidir se a exceção é só para o grupo `lab` ou geral — não decidi sozinho, ver README seção 6. |
+| Política de Cloudflare Access para `files.<domínio>` não é IaC | Mesma situação de `jellyfin`/`music`/`capas`: a rota de DNS é gerenciada pelo `cloudflared` CLI, mas a política de autenticação do Access em si é configurada manualmente no painel/CLI do Zero Trust, fora deste repositório. |
 
 ---
 
