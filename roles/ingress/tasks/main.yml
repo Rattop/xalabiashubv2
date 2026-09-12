@@ -395,7 +395,7 @@
   # download é pulado inteiro. A task vira no-op e a execução fica mais rápida.
   ansible.builtin.get_url:
     url: "{{ ttyd_url }}"
-    dest: /usr/local/bin/ttyd
+    dest: "{{ ttyd_bin }}"
     checksum: "{{ ttyd_checksum | default(omit, true) }}"
     owner: root
     group: root

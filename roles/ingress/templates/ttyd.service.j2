@@ -14,7 +14,7 @@ Type=simple
 # conecta por localhost, então ssh.{{ base_domain }} segue funcionando
 # igual; o que some é a exposição direta na rede local.
 # -W mantém o terminal gravável (sem isso o terminal fica só-leitura).
-ExecStart=/usr/local/bin/ttyd -i {{ ttyd_bind_interface }} -p 7681 -W login
+ExecStart={{ ttyd_bin }} -i {{ ttyd_bind_interface }} -p 7681 -W login
 Restart=always
 RestartSec=5s
 User=root

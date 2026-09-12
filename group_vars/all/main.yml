@@ -63,6 +63,24 @@ firewall_public_ports:
 #
 # Ao trocar de versão, RECALCULE. O comando (sem sintaxe Jinja, no shell):
 #   curl -sL <URL-COMPLETA-COM-A-VERSAO-LITERAL> | sha256sum
+#
+# ONDE CADA BINÁRIO MORA
+# Centralizado aqui porque cada caminho é usado em TRÊS lugares que precisam
+# concordar entre si: a task que baixa o arquivo, o ExecStart da unit systemd
+# e a verificação de presença do services.yml. Enquanto o caminho ficava
+# repetido literalmente nos três, mover a instalação de lugar deixava os
+# outros dois apontando para o arquivo errado — e essa é exatamente a forma
+# do bug das DUAS CÓPIAS do cloudflared (README, seção 6): a unit executava
+# /usr/local/bin enquanto o dnf atualizava /usr/bin, em silêncio, por meses.
+#
+# cloudflared vem do RPM oficial da Cloudflare e por isso mora em /usr/bin.
+# Os outros três são binários baixados do GitHub, que por convenção do FHS
+# ficam em /usr/local/bin (software local, fora do gerenciador de pacotes).
+cloudflared_bin: /usr/bin/cloudflared
+ttyd_bin:        /usr/local/bin/ttyd
+playit_bin:      /usr/local/bin/playit
+wings_bin:       /usr/local/bin/wings
+
 ttyd_version:    "1.7.7"
 ttyd_url:        "https://github.com/tsl0922/ttyd/releases/download/{{ ttyd_version }}/ttyd.x86_64"
 ttyd_checksum:   "sha256:8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55"

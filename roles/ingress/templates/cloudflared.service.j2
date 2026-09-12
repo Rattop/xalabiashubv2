@@ -10,7 +10,7 @@ Type=notify
 # cópias: a do RPM e uma baixada à mão, com a unit apontando para a segunda —
 # ou seja, `dnf update cloudflared` atualizava um binário que não era o que
 # estava rodando.
-ExecStart=/usr/bin/cloudflared --no-autoupdate tunnel --config /etc/cloudflared/config.yml run
+ExecStart={{ cloudflared_bin }} --no-autoupdate tunnel --config /etc/cloudflared/config.yml run
 Restart=on-failure
 RestartSec=5s
 

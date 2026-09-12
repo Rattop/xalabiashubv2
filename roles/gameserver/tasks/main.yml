@@ -138,7 +138,7 @@
 - name: Binário do Wings
   ansible.builtin.get_url:
     url: "{{ wings_url }}"
-    dest: /usr/local/bin/wings
+    dest: "{{ wings_bin }}"
     checksum: "{{ wings_checksum | default(omit, true) }}"
     owner: root
     group: root
@@ -202,7 +202,7 @@
 - name: Binário do Playit
   ansible.builtin.get_url:
     url: "{{ playit_url }}"
-    dest: /usr/local/bin/playit
+    dest: "{{ playit_bin }}"
     checksum: "{{ playit_checksum | default(omit, true) }}"
     owner: root
     group: root

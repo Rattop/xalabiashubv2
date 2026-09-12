@@ -13,7 +13,7 @@ WorkingDirectory=/var/lib/pelican
 LimitNOFILE=4096
 PIDFile=/run/wings/daemon.pid
 RuntimeDirectory=wings
-ExecStart=/usr/local/bin/wings
+ExecStart={{ wings_bin }}
 Restart=on-failure
 RestartSec=5s
 

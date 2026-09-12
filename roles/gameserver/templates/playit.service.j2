@@ -17,7 +17,7 @@ StartLimitBurst=3
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/playit
+ExecStart={{ playit_bin }}
 Restart=on-failure
 RestartSec=15
 User=root

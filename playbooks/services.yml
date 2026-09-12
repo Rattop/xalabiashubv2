@@ -14,14 +14,19 @@
     # só o oldpbs/setup.yml fazia. O services.yml antigo então tentava iniciar
     # serviços cujos binários podiam não existir, e falhava de forma opaca.
     # Aqui a ausência é diagnosticada antes de tentar iniciar.
+    # Os caminhos vêm de group_vars/all/main.yml, não literais aqui: são os
+    # MESMOS valores que as roles usam para baixar cada binário e que as units
+    # systemd usam no ExecStart. Repetidos à mão, os três podiam divergir sem
+    # ninguém perceber — foi assim que o host ficou com duas cópias do
+    # cloudflared, uma atualizada pelo dnf e outra sendo executada.
     - name: Binários dos serviços nativos presentes
       ansible.builtin.stat:
         path: "{{ item }}"
       loop:
-        - /usr/bin/cloudflared
-        - /usr/local/bin/ttyd
-        - /usr/local/bin/playit
-        - /usr/local/bin/wings
+        - "{{ cloudflared_bin }}"
+        - "{{ ttyd_bin }}"
+        - "{{ playit_bin }}"
+        - "{{ wings_bin }}"
       register: svc_bins
 
     - name: Falha clara se algum binário faltar
