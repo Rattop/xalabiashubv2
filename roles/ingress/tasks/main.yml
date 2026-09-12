@@ -103,6 +103,76 @@
   tags: [ingress, nginx]
 
 # -----------------------------------------------------------------------------
+# BLOCO 1.1 — site estático institucional
+# -----------------------------------------------------------------------------
+# BUG REAL, encontrado na revisão de 12/09/2026 e reproduzido no laboratório:
+#
+#   O xalabiashub.conf.j2 serve `root {{ site_dest }}/public`, mas NENHUMA role
+#   criava esse diretório — o único `git:` do projeto vivia no update.yml.
+#
+#   Consequência: depois de uma reinstalação (o "teste destrutivo" do README,
+#   seção 11), setup.yml + services.yml subiam tudo menos o site do domínio
+#   principal, e ninguém era avisado. Num laboratório convergido de ponta a
+#   ponta, o sintoma era este:
+#
+#       $ curl -H 'Host: xalabiashub.online' http://127.0.0.1/
+#       HTTP 404                 ( /var/www vazio )
+#
+#   Convergir é descrever o estado desejado do host INTEIRO. Um server block
+#   apontando para um diretório que nenhuma task cria descreve só metade dele —
+#   e a metade que falta é justamente a que o visitante vê primeiro.
+#
+#   Por que aqui e não numa role própria: quem serve esse diretório é o nginx,
+#   que é desta role. O site não tem serviço, porta nem daemon próprio — é
+#   conteúdo do ingress.
+
+- name: Verificar se existe chave SSH para clonar o site
+  # O clone é por SSH (git@github.com), então depende de uma chave PRIVADA do
+  # app_user. Ela é segredo e, corretamente, não está no repositório nem no
+  # vault — num host recém-instalado simplesmente ainda não existe.
+  #
+  # `find` é módulo de leitura e funciona em --check, ao contrário de um
+  # `command: ls`.
+  ansible.builtin.find:
+    paths: "{{ app_home }}/.ssh"
+    patterns: ['id_ed25519', 'id_rsa', 'id_ecdsa']
+    file_type: file
+  register: site_ssh_keys
+  tags: [ingress, site]
+
+- name: Avisar quando não há chave para clonar o site
+  # Ausência é AVISO, não erro fatal — mesmo critério que a role storage aplica
+  # ao HD externo. Abortar a convergência inteira porque o site não pôde ser
+  # clonado deixaria o host sem NADA configurado; avisar entrega o host de pé
+  # com uma pendência nomeada, que é o resultado útil.
+  ansible.builtin.debug:
+    msg: >-
+      Nenhuma chave SSH encontrada em {{ app_home }}/.ssh: o site
+      {{ base_domain }} NÃO será clonado e o nginx responderá 404 no domínio
+      principal. Instale a chave de deploy do repositório do site e rode
+      novamente com --tags site.
+  when: site_ssh_keys.matched | int == 0
+  tags: [ingress, site]
+
+- name: Site estático presente e atualizado
+  # Sem accept_hostkey de propósito: a chave de host do github.com já é fixada
+  # pela role common, no known_hosts do app_user. A confiança foi DECLARADA
+  # antes, em vez de aceita às cegas na primeira conexão.
+  #
+  # force: true reconcilia o diretório com o repositório remoto, inclusive
+  # descartando edição feita à mão no host — que é o comportamento desejado
+  # num playbook de convergência: a fonte da verdade é o Git, não o servidor.
+  ansible.builtin.git:
+    repo: "{{ site_repo }}"
+    dest: "{{ site_dest }}"
+    version: main
+    update: true
+    force: true
+  become_user: "{{ app_user }}"
+  when: site_ssh_keys.matched | int > 0
+  tags: [ingress, site]
+
+# -----------------------------------------------------------------------------
 # BLOCO 2 — cloudflared
 # -----------------------------------------------------------------------------
 
