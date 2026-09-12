@@ -116,14 +116,20 @@
   # ---------------------------------------------------------------------------
   # ROLES — a ordem importa
   #
-  #   common     -> usuário e pacotes; tudo depende disso
-  #   storage    -> monta o disco antes que alguém tente escrever nele
-  #   docker     -> instala o engine ANTES do selinux, de propósito (ver nota)
-  #   selinux    -> booleans de container, só possíveis depois do docker
-  #   firewall   -> regras antes dos serviços começarem a escutar
-  #   ingress    -> camada de entrada
-  #   media      -> stacks de mídia
-  #   gameserver -> stacks e daemons de jogo
+  #   common      -> usuário e pacotes; tudo depende disso
+  #   tailscale   -> conectividade do host; sem dependência de Docker/SELinux,
+  #                  por isso entra cedo, junto de common. NÃO faz login
+  #                  sozinha (ver roles/tailscale/tasks/main.yml) — a
+  #                  convergência não trava esperando aprovação no navegador.
+  #   storage     -> monta o disco antes que alguém tente escrever nele
+  #   docker      -> instala o engine ANTES do selinux, de propósito (ver nota)
+  #   selinux     -> booleans de container, só possíveis depois do docker
+  #   firewall    -> regras antes dos serviços começarem a escutar
+  #   ingress     -> camada de entrada
+  #   media       -> stacks de mídia
+  #   gameserver  -> stacks e daemons de jogo
+  #   filemanager -> FileBrowser; só depende de common/docker, mesma posição
+  #                  relativa de gameserver
   #
   # NOTA SOBRE docker vir antes de selinux — bug real, encontrado testando
   # num host verdadeiramente limpo:
@@ -150,6 +156,7 @@
   # ---------------------------------------------------------------------------
   roles:
     - { role: common,     tags: [common] }
+    - { role: tailscale,  tags: [tailscale] }
     - { role: storage,    tags: [storage] }
     - { role: docker,     tags: [docker] }
     - { role: selinux,    tags: [selinux] }
@@ -157,6 +164,7 @@
     - { role: ingress,    tags: [ingress] }
     - { role: media,      tags: [media] }
     - { role: gameserver, tags: [gameserver] }
+    - { role: filemanager, tags: [filemanager] }
 
   # ---------------------------------------------------------------------------
   # POST_TASKS — verificação do resultado

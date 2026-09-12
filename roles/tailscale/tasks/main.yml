@@ -1,0 +1,103 @@
+---
+# =============================================================================
+# ROLE: tailscale
+# -----------------------------------------------------------------------------
+# O QUE FAZ
+#   Instala o Tailscale para acesso remoto do usuário ao host — device próprio
+#   no tailnet, independente do túnel Cloudflare (que existe para os serviços
+#   PÚBLICOS, atrás de Cloudflare Access).
+#
+# POR QUE ISTO NÃO ABRE PORTA NENHUMA NO ROTEADOR
+#   Mesma lógica do cloudflared (README, "decisão de arquitetura mais
+#   importante"): o Tailscale conecta de SAÍDA e usa hole-punching/relay
+#   (DERP) para NAT traversal. Não há porta de entrada para redirecionar nem
+#   para escanear.
+#
+# POR QUE A ROLE NÃO RODA `tailscale up` SOZINHA
+#   Sem authkey (decisão deste projeto: login interativo, não chave de longa
+#   duração no vault), `tailscale up` imprime uma URL de aprovação e BLOQUEIA
+#   esperando o clique no navegador — exatamente como o `cloudflared tunnel
+#   login` documentado no CLAUDE.md como etapa manual, fora da convergência.
+#   Travar aqui uma convergência inteira (que pode rodar desatendida via
+#   deploy.sh) esperando um clique é o tipo de acoplamento que este projeto
+#   evita em todo outro lugar. A task de verificação abaixo só AVISA quando o
+#   login ainda não foi feito; não é chamada obrigatória de setup.yml/services
+#   por nenhuma outra role.
+#
+# SOBRE FIREWALL E SELINUX
+#   Não há tasks aqui para nenhum dos dois, de propósito. O tailscaled detecta
+#   firewalld sozinho e integra sua própria zona/regras; e uma negação de
+#   SELinux só justifica boolean ou política customizada depois de CONFIRMADA
+#   (`ausearch`, que o diag.yml já coleta) — não antes, por suposição. Ver o
+#   método de investigação do projeto no CLAUDE.md.
+# =============================================================================
+
+- name: Chave GPG do Tailscale importada
+  # Mesmo motivo do bloco cloudflared em roles/ingress: sem isto seria preciso
+  # disable_gpg_check, que instala o que o repositório devolver sem checar
+  # assinatura. Fingerprint conferida direto do arquivo publicado em
+  # pkgs.tailscale.com/stable/rhel/10/repo.gpg em 12/09/2026.
+  ansible.builtin.rpm_key:
+    key: https://pkgs.tailscale.com/stable/rhel/10/repo.gpg
+    fingerprint: "2596 A99E AAB3 3821 893C  0A79 458C A832 957F 5868"
+    state: present
+  tags: [tailscale]
+
+- name: Repositório do Tailscale
+  # rhel/10 existe e é o que a AlmaLinux 10 (RHEL 10 downstream) usa —
+  # confirmado direto no host, não assumido por analogia com o rhel/9 do
+  # restante do ecossistema EL.
+  ansible.builtin.yum_repository:
+    name: tailscale-stable
+    description: Tailscale stable
+    baseurl: "https://pkgs.tailscale.com/stable/rhel/10/$basearch"
+    gpgcheck: true
+    repo_gpgcheck: true
+    gpgkey: https://pkgs.tailscale.com/stable/rhel/10/repo.gpg
+    enabled: true
+  tags: [tailscale]
+
+- name: Tailscale instalado
+  ansible.builtin.dnf:
+    name: tailscale
+    state: present
+  tags: [tailscale]
+
+- name: tailscaled ativo e habilitado
+  ansible.builtin.service:
+    name: tailscaled
+    state: started
+    enabled: true
+  tags: [tailscale]
+
+- name: Estado atual do tailnet
+  # `tailscale status --json` não muda nada — leitura pura, funciona em
+  # --check. Falha (rc != 0) é esperada logo após a instalação, antes do
+  # primeiro `tailscale up`: o daemon está rodando mas sem estado de login.
+  ansible.builtin.command: tailscale status --json
+  register: tailscale_status
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  tags: [tailscale]
+
+- name: Extrair estado de autenticação
+  ansible.builtin.set_fact:
+    tailscale_backend_state: >-
+      {{ (tailscale_status.stdout | from_json).BackendState
+         if tailscale_status.rc == 0 and tailscale_status.stdout | default('') | length > 0
+         else 'Unknown' }}
+  tags: [tailscale]
+
+- name: Avisar quando o host ainda não está autenticado no tailnet
+  # NÃO-FATAL de propósito — ver cabeçalho desta role. `tailscale up` é etapa
+  # manual, rodada fora do Ansible, com login interativo no navegador.
+  ansible.builtin.debug:
+    msg: >-
+      Tailscale instalado mas o host ainda não está no tailnet
+      (BackendState={{ tailscale_backend_state }}). Rode manualmente:
+      sudo tailscale up
+      A URL de aprovação impressa expira em poucos minutos — mesma janela
+      curta do `cloudflared tunnel login`.
+  when: tailscale_backend_state != 'Running'
+  tags: [tailscale]

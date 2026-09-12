@@ -23,3 +23,7 @@ vault_pelican_db_root_password: "TROQUE-ME"
 # vazar, o raio do estrago fica limitado a um serviço.
 vault_pelican_redis_password:   "TROQUE-ME"
 vault_pelican_admin_email:      "admin@xalabiashub.online"
+
+# Senha do usuário admin do FileBrowser (role filemanager). Sem isto, a
+# imagem oficial criaria o admin com a senha padrão previsível admin/admin.
+vault_filebrowser_admin_password: "TROQUE-ME"

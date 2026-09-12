@@ -1,0 +1,43 @@
+# {{ ansible_managed }}
+#
+# FileBrowser — gerenciador de arquivos web com upload remoto.
+# Acesso público: https://files.{{ base_domain }} (via túnel Cloudflare)
+#
+# Reocupa a rota files.{{ base_domain }} -> localhost:8080 que existiu neste
+# projeto antes: foi removida de group_vars/all/main.yml porque o serviço
+# antigo "não existe mais" — sem registro de por quê, e sem provisionamento
+# idempotente (a senha do admin, por exemplo, não vinha do vault). Esta
+# versão corrige as duas coisas.
+services:
+  filebrowser:
+    image: filebrowser/filebrowser:latest
+    container_name: filebrowser
+    restart: unless-stopped
+    # SEM `user:` de propósito — ao contrário do Jellyfin/Navidrome, esta
+    # imagem roda com um UID/GID FIXO seu (1000:1000, "user" na própria
+    # imagem) e não aceita ser redirecionada para {{ app_uid }}:{{ app_gid }}
+    # do host. Ver o comentário completo (bug real, achado no laboratório)
+    # em roles/filemanager/tasks/main.yml. Os diretórios montados abaixo são
+    # criados com dono 1000:1000 fixo por esse mesmo motivo.
+    security_opt:
+      - no-new-privileges:true
+
+    ports:
+      # Mesmo padrão de toggle que media_bind_address: 127.0.0.1 -> só o
+      # túnel Cloudflare alcança; 0.0.0.0 -> qualquer dispositivo da LAN sem
+      # autenticação de borda.
+      - "{{ filebrowser_bind_address }}:8080:80"
+
+    environment:
+      TZ: "{{ timezone }}"
+
+    volumes:
+      # Banco de dados (usuários, permissões, sessões) — criado e populado
+      # pela task de inicialização da role, não pela imagem na primeira
+      # subida, para que o admin nunca fique com a senha padrão admin/admin.
+      - ./database:/database:z
+      # Raiz exposta para upload/organização. Diretório PRÓPRIO, separado das
+      # bibliotecas do Jellyfin/Navidrome — este serviço permite escrever e
+      # apagar pela interface web, e misturar isso com a biblioteca de mídia
+      # arriscaria o usuário apagar pelo FileBrowser o que o Navidrome indexa.
+      - "{{ filebrowser_root_dir }}:/srv:z"

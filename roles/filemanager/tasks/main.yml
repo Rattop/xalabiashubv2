@@ -1,0 +1,153 @@
+---
+# =============================================================================
+# ROLE: filemanager
+# -----------------------------------------------------------------------------
+# O QUE FAZ
+#   Provisiona o FileBrowser: gerenciador de arquivos web com upload remoto.
+#
+# POR QUE UMA ROLE PRÓPRIA, E NÃO DENTRO DE media
+#   media/ é especificamente "biblioteca de mídia" (Jellyfin/Navidrome/
+#   Picard) — os três leem a mesma coleção em {{ music_dir }}/{{ media_root }}.
+#   O FileBrowser é outra coisa: uma área de upload de propósito geral, com
+#   permissão de ESCRITA e EXCLUSÃO pela própria interface web. Misturar as
+#   duas correria o risco de o usuário apagar pelo FileBrowser um arquivo que
+#   o Navidrome está indexando. Por isso a raiz exposta
+#   ({{ filebrowser_root_dir }}) é um diretório dedicado, fora das bibliotecas
+#   de mídia.
+#
+# POR QUE A SENHA DO ADMIN NÃO VEM DA IMAGEM PADRÃO
+#   Sem configuração, a imagem oficial cria o banco na primeira subida com um
+#   usuário admin/admin. Isso é exatamente o tipo de segredo previsível que
+#   este projeto elimina em todo outro lugar (ver README, seção 5) — então a
+#   inicialização do banco e a criação do admin acontecem AQUI, com a senha
+#   do vault, ANTES de o container subir pela primeira vez.
+# =============================================================================
+
+- name: Validar que a senha do admin do FileBrowser foi definida
+  # Mesmo padrão de roles/gameserver/tasks/main.yml: falhar cedo e com
+  # mensagem útil, em vez de deixar a senha padrão da imagem em produção.
+  ansible.builtin.assert:
+    that:
+      - vault_filebrowser_admin_password is defined
+      - vault_filebrowser_admin_password != "TROQUE-ME"
+    fail_msg: |
+      vault_filebrowser_admin_password ausente ou ainda no valor de exemplo.
+
+          ansible-vault edit group_vars/all/vault.yml
+          # adicione: vault_filebrowser_admin_password: "<gerada com openssl rand -base64 24>"
+
+      Depois rode o playbook com --ask-vault-pass.
+    success_msg: "Senha do admin do FileBrowser carregada do vault."
+  tags: [filemanager]
+
+- name: Diretório raiz da stack do FileBrowser
+  # Este, sim, dono {{ app_user }}: só guarda o docker-compose.yml, que o
+  # próprio host lê/escreve (ninguém dentro do container toca nele).
+  ansible.builtin.file:
+    path: "{{ app_home }}/docker/filebrowser"
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0750'
+  tags: [filemanager]
+
+# BUG REAL, encontrado testando no laboratório:
+#
+#   A imagem oficial filebrowser/filebrowser NÃO é como o Jellyfin — ela não
+#   aceita rodar com um UID arbitrário do host. `docker run --entrypoint ''
+#   filebrowser/filebrowser id` devolve `uid=1000(user) gid=1000(user)`, e
+#   `/config` e `/database` já vêm GRAVADOS na imagem com dono `user:user`
+#   (1000:1000). É um UID fixo da própria imagem, não um "rode com o UID que
+#   eu mandar" como o Jellyfin com group_add.
+#
+#   A primeira versão desta role usava `owner: {{ app_user }}` (que resolve
+#   para {{ app_uid }}) nestes dois diretórios, e passava
+#   `--user {{ app_uid }}:{{ app_gid }}` no docker run de inicialização — para
+#   "casar" com o dono real do diretório no host. Em PRODUÇÃO isso funciona
+#   por coincidência: app_uid lá é 1000, igual ao da imagem. No laboratório,
+#   onde app_uid é 1001 (ver group_vars/lab/main.yml), a mesma role quebrou:
+#   forçar --user 1001:1001 tirava do processo o acesso ao /config que a
+#   imagem já é dona como 1000, e o entrypoint (`tini -- /init.sh`) morria em
+#   "cp: can't create '/config/settings.json': Permission denied" antes de
+#   chegar em qualquer coisa nossa.
+#
+#   LIÇÃO (mesma do GID de vídeo do Jellyfin): quando um container espera um
+#   UID/GID específico, ele é um número FIXO da imagem, não um valor derivado
+#   do host — e testar só em produção esconde a diferença quando os dois
+#   números coincidem sem querer.
+#
+#   Correção: os diretórios que o FileBrowser realmente monta ficam com o
+#   dono NUMÉRICO 1000:1000 sempre, em todo host, e nem o compose nem a
+#   inicialização usam {{ app_uid }} aqui.
+- name: Diretórios montados no container do FileBrowser
+  ansible.builtin.file:
+    path: "{{ app_home }}/docker/filebrowser/database"
+    state: directory
+    owner: 1000
+    group: 1000
+    mode: '0750'
+  tags: [filemanager]
+
+- name: Diretório de upload dedicado
+  # Fora de docker/filebrowser porque é DADO do usuário, não estado da
+  # aplicação — mesma distinção que roles/media faz entre config/cache
+  # (dados da aplicação, dentro de docker/<stack>) e a biblioteca de mídia
+  # em {{ media_root }} (dado do usuário, fora do docker/).
+  #
+  # Dono 1000:1000 pelo mesmo motivo do diretório acima: é o UID/GID FIXO da
+  # imagem do FileBrowser, não {{ app_uid }}.
+  ansible.builtin.file:
+    path: "{{ filebrowser_root_dir }}"
+    state: directory
+    owner: 1000
+    group: 1000
+    mode: '0750'
+  tags: [filemanager]
+
+- name: Compose do FileBrowser
+  ansible.builtin.template:
+    src: filebrowser-compose.yml.j2
+    dest: "{{ app_home }}/docker/filebrowser/docker-compose.yml"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0640'
+  tags: [filemanager]
+
+- name: Banco e usuário admin do FileBrowser inicializados
+  # Roda uma ÚNICA vez, guardado por `creates`: se filebrowser.db já existe,
+  # a imagem já tem usuário configurado e recriar apagaria qualquer mudança
+  # de senha feita depois pela própria interface web.
+  #
+  # `docker run --rm` (não `docker compose`) de propósito: são comandos de
+  # inicialização de UMA VEZ, não parte do ciclo de vida da stack — subir o
+  # serviço de verdade continua sendo responsabilidade do services.yml, via
+  # `docker compose up -d`, igual a toda outra stack deste projeto.
+  #
+  # SEM --user: a imagem já roda como seu próprio 1000:1000 fixo (ver bug real
+  # documentado na task de diretórios acima). Passar --user explícito aqui de
+  # novo seria reintroduzir o mesmo bug se algum dia {{ app_uid }} divergir de
+  # 1000 — o comportamento correto é simplesmente não mexer no user da imagem.
+  #
+  # SEGUNDO BUG REAL, encontrado na MESMA rodada de teste: com
+  # `become_user: {{ app_user }}`, o `creates:` abaixo nunca detectava o
+  # filebrowser.db já existente, e a task rodava de novo — quebrando na
+  # segunda vez com "/database/filebrowser.db already exists". Causa: o
+  # diretório é dono 1000:1000 modo 0750 (task acima, de propósito), e
+  # {{ app_user }} (1001 no laboratório) não tem permissão nem para ENXERGAR
+  # o arquivo lá dentro — o módulo trata "não consigo checar" como "não
+  # existe" e roda de novo. root sempre pode ler/escrever ali (e é quem fala
+  # com o daemon do Docker de qualquer forma, não importa qual usuário digitou
+  # `docker run`), então esta task roda como root — sem become_user — em vez
+  # de {{ app_user }}.
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      docker run --rm \
+        -v {{ app_home }}/docker/filebrowser/database:/database:z \
+        filebrowser/filebrowser config init
+      docker run --rm \
+        -v {{ app_home }}/docker/filebrowser/database:/database:z \
+        filebrowser/filebrowser users add {{ filebrowser_admin_user }} '{{ vault_filebrowser_admin_password }}' --perm.admin=true
+    executable: /bin/bash
+    creates: "{{ app_home }}/docker/filebrowser/database/filebrowser.db"
+  tags: [filemanager]

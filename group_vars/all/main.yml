@@ -97,9 +97,13 @@ wings_checksum:  "sha256:4fb1f8302cb4458d39e11667d8df646363ce6ac4784110513ed8b8b
 cloudflare_tunnel_id:   "d4e1d3d5-eb25-4892-8ec4-07bf6e6faf24"
 cloudflare_tunnel_name: "xalabias-tunnel"
 
-# Rotas do túnel. A antiga files.<dominio> -> :8080 foi REMOVIDA: apontava
-# para um Filebrowser que não existe mais e gerava erro a cada varredura de
-# robô no log do cloudflared.
+# Rotas do túnel.
+#
+# files.<dominio> -> :8080 REOCUPA a rota que existiu antes e foi removida:
+# apontava para um Filebrowser que não existe mais e gerava erro a cada
+# varredura de robô no log do cloudflared. A instância nova (role
+# filemanager) tem provisionamento idempotente completo — o que faltava na
+# anterior — então a rota volta.
 cloudflare_ingress:
   - { hostname: "{{ base_domain }}",          service: "http://localhost:80" }
   - { hostname: "painel.{{ base_domain }}",   service: "http://localhost:80" }
@@ -109,6 +113,7 @@ cloudflare_ingress:
   - { hostname: "music.{{ base_domain }}",    service: "http://localhost:4533" }
   - { hostname: "capas.{{ base_domain }}",    service: "http://localhost:5800" }
   - { hostname: "mapa.{{ base_domain }}",     service: "http://{{ host_lan_ip }}:8100" }
+  - { hostname: "files.{{ base_domain }}",    service: "http://localhost:8080" }
 
 # --- Front-end ---------------------------------------------------------------
 site_repo: "git@github.com:Rattop/xalabiaserver.git"
@@ -120,8 +125,13 @@ docker_stacks:
   - jellyfin
   - navidrome
   - picard
+  - filebrowser
 
 # Serviços systemd nativos, em ordem de dependência.
+# tailscaled entra na lista para services.yml/diag.yml (start/enable, log,
+# is-active) — mas NÃO no loop de systemd-analyze verify do setup.yml, que é
+# só para as units CUSTOMIZADAS deste projeto (a de tailscaled vem pronta do
+# RPM, não é template nosso).
 systemd_services:
   - docker
   - nginx
@@ -129,6 +139,7 @@ systemd_services:
   - ttyd
   - playit
   - wings
+  - tailscaled
 
 # --- Toggles de hardening ----------------------------------------------------
 # Cada um desfaz uma decisão insegura do repositório antigo. São variáveis (e
@@ -152,6 +163,17 @@ jellyfin_media_readonly:    true
 # Era 0.0.0.0 antes deste projeto. Se você usa app de música apontando direto
 # para o IP do servidor na rede local, troque — sabendo o que está abrindo.
 media_bind_address:         "127.0.0.1"
+
+# Mesmo toggle, para o FileBrowser (role filemanager). Fica em variável
+# própria, não reaproveitando media_bind_address: é outro serviço, com outro
+# risco (aceita upload/exclusão), e precisa poder ser revertido sozinho.
+filebrowser_bind_address:   "127.0.0.1"
+# Raiz exposta pelo FileBrowser. Diretório PRÓPRIO fora de docker/, mesma
+# lógica de music_dir/media_root: dado do usuário, não estado da aplicação
+# (que fica em docker/filebrowser/) — ver roles/filemanager/tasks/main.yml.
+filebrowser_root_dir:       "{{ app_home }}/files"
+filebrowser_admin_user:     "admin"
+
 # SELinux do Jellyfin: MANTIDO desligado. A policy 42.x do AlmaLinux 10 não
 # expõe mais o boolean container_execmem que resolvia o SIGSEGV do JIT .NET.
 # Reduzir isso exige política própria, igual à do ttyd. Fica como dívida.
