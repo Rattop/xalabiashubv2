@@ -346,6 +346,8 @@ Aberto, não esquecido.
 | Sem `update.yml` agendado | A auditoria achou 26 versões de kernel e correções *Important* de OpenSSH e nginx pendentes. Falta um `systemd timer`. |
 | Sem monitoramento nem alerta | Próxima fase: Prometheus + node_exporter. |
 | Sem rotina de backup testada | Existem dados em `/mnt/cloud`, mas sem restauração verificada não é backup. |
+| `APP_URL` do painel fixo no compose | Contraria a regra de zero valor fixo fora de `group_vars` e impede testar o painel em qualquer nome que não seja o de produção — o Laravel gera URL absoluta e redireciona para lá. Vira variável quando o laboratório precisar do painel de verdade. |
+| Chave de deploy do site não é gerenciada | O `setup.yml` já clona o site, mas a chave SSH privada do `app_user` é segredo que não está no vault nem no repositório. Hoje a task avisa e pula quando ela falta; automatizar exige decidir onde guardar mais um segredo. |
 
 ---
 

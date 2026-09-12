@@ -154,6 +154,43 @@ depende de um `config.yml` que o Pelican Panel só gera depois que um node
 é criado pela interface. Isso é limitação de um laboratório sem jogo
 configurado, não bug de playbook.
 
+Confirmado de novo em 12/09/2026, depois da rodada de correções de
+revisão de código: `setup.yml --skip-tags cloudflared` deu `changed=0` na
+segunda passada e o `diag.yml` rodou sem falha não esperada. As duas
+falhas que o `diag.yml` acusa no laboratório são legítimas e conhecidas:
+`cloudflared inactive` (a unit nem existe enquanto a tag estiver pulada) e
+`wings activating` — este último sai com `status=1` em laço de
+`auto-restart` porque `/etc/pelican/config.yml` não existe, que é a mesma
+limitação descrita no parágrafo acima, agora com o sintoma exato anotado.
+
+### Mapa de exposição do laboratório (medido em 12/09/2026)
+
+Útil antes de concluir que "o serviço não está no ar": no laboratório,
+**quase nada é alcançável pela rede — e isso é o desenho funcionando**.
+
+| Serviço | Bind | Alcançável da LAN |
+|---|---|---|
+| nginx (site e painel) | `0.0.0.0:80` | não — firewalld REJEITA |
+| Jellyfin | `0.0.0.0:8096` | não — firewalld REJEITA |
+| ttyd | `127.0.0.1:7681` | não — loopback |
+| Navidrome | `127.0.0.1:4533` | não — loopback |
+| Picard | `127.0.0.1:5800` | não — loopback |
+| Pelican Panel | `127.0.0.1:8081` | não — loopback |
+| MariaDB / Redis | rede do compose | não — sem porta publicada |
+| SSH | `0.0.0.0:22` | sim |
+| SFTP do Wings | `2022/tcp` liberado | porta aberta, mas nada escutando |
+
+Em produção quem entra é o `cloudflared`, a partir de `localhost`. Como o
+laboratório ainda não tem túnel, **não existe caminho de rede até esses
+serviços** — testar pelo navegador exige um túnel SSH
+(`ssh -N -L 8096:127.0.0.1:8096 ... ratto@<ip>`), que passa pelo mesmo
+`localhost` que o cloudflared usaria, sem afrouxar o firewall.
+
+Ao diagnosticar, distinga as duas recusas: `No route to host` é o
+firewalld rejeitando; `Connection refused` é porta liberada sem ninguém
+escutando. Confundir as duas leva a mexer no firewall quando o problema
+era serviço fora do ar.
+
 ### Pendência: túnel próprio do laboratório (ainda não implementado)
 
 O `ingress` aborta no laboratório em "credencial do túnel não existe":
@@ -168,6 +205,54 @@ fazem a Cloudflare dividir o tráfego de produção com a VM. Falta:
    `group_vars/lab/main.yml` com os valores do túnel de laboratório.
 
 Até isso existir, valide o resto com `--skip-tags cloudflared`.
+
+**Tudo por terminal.** O cloudflared deste projeto é gerenciado 100% por
+linha de comando — inclusive o roteamento de DNS
+(`cloudflared tunnel route dns <túnel> <hostname>`). Não use o painel web
+da Cloudflare para criar rota, nem para nada que o CLI já faça.
+
+O `cloudflared` 2026.9.0 **já está instalado na VM** (a role chega a rodar
+e só aborta na checagem de credencial), então o passo 1 começa direto no
+`tunnel login`. Ele imprime uma URL e fica bloqueado esperando o callback
+do navegador; esse callback **expira em poucos minutos** e o erro é
+`Failed to fetch resource`. Se isso acontecer, `/root/.cloudflared/` fica
+criado e vazio — não é estado corrompido, é só rodar o login de novo.
+
+#### Nomes temporários planejados para o laboratório
+
+Prefixo `lab-`, nenhum colidindo com os de produção (a lista de produção
+está em `cloudflare_ingress`, em `group_vars/all/main.yml`):
+
+| Temporário | Destino |
+|---|---|
+| `lab.<domínio>`          | `localhost:80` (site) |
+| `lab-painel.<domínio>`   | `localhost:8081` (painel, SEM passar pelo nginx) |
+| `lab-jellyfin.<domínio>` | `localhost:8096` |
+| `lab-music.<domínio>`    | `localhost:4533` |
+| `lab-capas.<domínio>`    | `localhost:5800` |
+| `lab-ssh.<domínio>`      | `localhost:7681` |
+
+Esses nomes entram como override de `cloudflare_ingress` em
+`group_vars/lab/main.yml` — o `config.yml` continua saindo do template
+`cloudflared-config.yml.j2`, sem arquivo escrito à mão.
+
+O painel aponta direto para `:8081` de propósito: o `server_name` do
+nginx é `painel.<domínio>`, então um nome `lab-painel` cairia no
+catch-all `return 444`. Ir direto no container evita editar config de
+nginx só para teste.
+
+#### Bloqueio conhecido: `APP_URL` do painel é fixo
+
+`pelican-compose.yml.j2` fixa `APP_URL=https://painel.{{ base_domain }}`.
+Como o Laravel gera URL absoluta a partir disso, abrir o painel por
+qualquer outro nome (incluindo `lab-painel`) redireciona para o domínio
+de **produção** — ou seja, o teste de laboratório sai do laboratório.
+
+Para testar o painel no lab é preciso antes transformar isso em variável
+(ex.: `pelican_app_url`, com o valor de produção como padrão em
+`group_vars/all/` e o de laboratório sobrescrito em `group_vars/lab/`) e
+recriar o container do painel. Os outros cinco serviços não têm esse
+problema e podem ser testados sem mudança nenhuma.
 
 ## Como investigar um erro (método obrigatório, não sugestão)
 
